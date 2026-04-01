@@ -1,0 +1,13 @@
+{
+  "job_id": "",
+  "status": "idle",
+  "updated_at": "",
+  "project_repo_path": "/home/dkar/workspace/projects/mcp_clickup",
+  "project_name": "mcp_clickup",
+  "base_branch": "main",
+  "executor_worktree_path": "/home/dkar/workspace/runtime/worktrees/mcp_clickup-executor",
+  "reviewer_worktree_path": "/home/dkar/workspace/runtime/worktrees/mcp_clickup-reviewer",
+  "last_error": "",
+  "trigger_source": "",
+  "next_action": "await_task"
+}
