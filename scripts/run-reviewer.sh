@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/common.sh"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+source "$SCRIPT_DIR/common.sh"
 
 require_cmd codex
 require_cmd python3
@@ -47,17 +48,22 @@ Active task:
 $(cat "$TASK_FILE")
 PROMPT
 
+"$SCRIPT_DIR/mark-running.sh" reviewer >/dev/null
 state_set "reviewer_running" "" "await_reviewer_result"
 
-if ! codex exec \
+set +e
+codex exec \
   -C "$WORKTREE" \
   -s workspace-write \
   -c 'approval_policy="never"' \
   --output-last-message "$LOCAL_LAST_MESSAGE" \
   - < "$PROMPT_FILE"
-then
-  rc=$?
+rc=$?
+set -e
+
+if [ "$rc" -ne 0 ]; then
   state_set "failed" "reviewer failed with exit code $rc" "investigate_reviewer"
+  "$SCRIPT_DIR/sync-outbox.sh" >/dev/null
   exit $rc
 fi
 
@@ -74,6 +80,7 @@ if [ ! -f "$LOCAL_REPORT" ]; then
     fi
   } > "$OUTBOX_DIR/reviewer-report.md"
   state_set "failed" "reviewer report was not produced" "fix_reviewer_prompt_or_runner"
+  "$SCRIPT_DIR/sync-outbox.sh" >/dev/null
   exit 1
 fi
 
@@ -81,3 +88,4 @@ cp "$LOCAL_REPORT" "$OUTBOX_DIR/reviewer-report.md"
 [ -f "$LOCAL_LAST_MESSAGE" ] && cp "$LOCAL_LAST_MESSAGE" "$OUTBOX_DIR/reviewer-last-message.md" || true
 
 state_set "completed" "" "await_next_task"
+"$SCRIPT_DIR/sync-outbox.sh" >/dev/null
