@@ -9,10 +9,14 @@ The host-side runner will copy the report into the control outbox after the run.
 Review the implementation critically.
 Re-run or extend verification where needed.
 
-The report must contain:
-1. Verdict
-2. Defects found
-3. Verification performed
-4. Risk assessment
-5. Required fixes
-6. Recommended next action
+The report MUST begin with these exact machine-readable lines before any other section:
+Verdict: approved|changes_requested|blocked
+Summary: <one-line summary>
+Commit SHA: <sha or none>
+
+After that, include these sections:
+1. Defects found
+2. Verification performed
+3. Risk assessment
+4. Required fixes
+5. Recommended next action

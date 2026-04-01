@@ -103,5 +103,13 @@ fi
 cp "$LOCAL_REPORT" "$OUTBOX_DIR/reviewer-report.md"
 [ -f "$LOCAL_LAST_MESSAGE" ] && cp "$LOCAL_LAST_MESSAGE" "$OUTBOX_DIR/reviewer-last-message.md" || true
 
-state_set "completed" "" "await_next_task"
-"$SCRIPT_DIR/sync-outbox.sh" >/dev/null
+set +e
+"$SCRIPT_DIR/complete-run-from-review.sh"
+complete_rc=$?
+set -e
+
+if [ "$complete_rc" -ne 0 ]; then
+  state_set "failed" "reviewer completion failed with exit code $complete_rc" "fix_reviewer_report_contract"
+  "$SCRIPT_DIR/sync-outbox.sh" >/dev/null
+  exit "$complete_rc"
+fi

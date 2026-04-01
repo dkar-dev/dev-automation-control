@@ -88,10 +88,24 @@ REPORT
 elif printf '%s' "$PROMPT" | grep -q 'You are the reviewer'; then
   ROLE="reviewer"
   cat > "$WORKTREE/.codex-run/reviewer-report.md" <<'REPORT'
-# Reviewer Report
+Verdict: approved
+Summary: reviewer approved the synthetic run
+Commit SHA: deadbeef
 
-## Verdict
-approved
+## Defects found
+- none
+
+## Verification performed
+- synthetic smoke verification
+
+## Risk assessment
+- low
+
+## Required fixes
+- none
+
+## Recommended next action
+- finalize automatically
 REPORT
 fi
 
@@ -123,7 +137,7 @@ PAYLOAD='{"project":"demo","task_text":"Smoke test real host-side runner flow.",
 PREPARE_RESP="$(curl -sS -X POST http://127.0.0.1:18787/prepare-run -H 'Content-Type: application/json' -d "$PAYLOAD")"
 EXECUTOR_RESP="$(curl -sS -X POST http://127.0.0.1:18787/run-executor -H 'Content-Type: application/json' -d '{}')"
 REVIEWER_RESP="$(curl -sS -X POST http://127.0.0.1:18787/run-reviewer -H 'Content-Type: application/json' -d '{}')"
-FINALIZE_RESP="$(curl -sS -X POST http://127.0.0.1:18787/finalize-run -H 'Content-Type: application/json' -d '{"status":"completed","verdict":"approved","summary":"Smoke test passed"}')"
+CURRENT_RESP="$(curl -sS http://127.0.0.1:18787/current-run)"
 
 printf 'executor' > "$TMP_ROOT/fail-role"
 PREPARE_FAIL_RESP="$(curl -sS -X POST http://127.0.0.1:18787/prepare-run -H 'Content-Type: application/json' -d "$PAYLOAD")"
@@ -136,31 +150,36 @@ python3 - <<'PY' \
   "$PREPARE_RESP" \
   "$EXECUTOR_RESP" \
   "$REVIEWER_RESP" \
-  "$FINALIZE_RESP" \
+  "$CURRENT_RESP" \
   "$PREPARE_FAIL_RESP" \
   "$FAIL_CODE" \
   "$FAIL_RESP"
 import json
 import sys
 
-prepare, executor, reviewer, finalize, prepare_fail, fail_code, fail_resp = sys.argv[1:]
+prepare, executor, reviewer, current_run, prepare_fail, fail_code, fail_resp = sys.argv[1:]
 prepare = json.loads(prepare)
 executor = json.loads(executor)
 reviewer = json.loads(reviewer)
-finalize = json.loads(finalize)
+current_run = json.loads(current_run)
 prepare_fail = json.loads(prepare_fail)
 fail_resp = json.loads(fail_resp)
 
 assert prepare["ok"] is True
 assert executor["ok"] is True
 assert reviewer["ok"] is True
-assert finalize["ok"] is True
+assert current_run["ok"] is True
 assert prepare_fail["ok"] is True
 assert executor["data"]["status"] == "executor_done", executor
 assert executor["data"]["outbox"]["executor_report"], executor
 assert reviewer["data"]["status"] == "completed", reviewer
 assert reviewer["data"]["outbox"]["reviewer_report"], reviewer
-assert finalize["data"]["result"]["verdict"] == "approved", finalize
+assert reviewer["data"]["result"]["verdict"] == "approved", reviewer
+assert reviewer["data"]["result"]["summary"] == "reviewer approved the synthetic run", reviewer
+assert reviewer["data"]["result"]["commit_sha"] == "deadbeef", reviewer
+assert current_run["data"]["status"] == "completed", current_run
+assert current_run["data"]["result"]["verdict"] == "approved", current_run
+assert current_run["data"]["result"]["commit_sha"] == "deadbeef", current_run
 assert fail_code == "500", fail_code
 assert fail_resp["ok"] is False
 assert "run-executor.sh exited with code 23" in fail_resp["error"], fail_resp
@@ -171,7 +190,8 @@ print(json.dumps({
     "prepare_status": prepare["data"]["status"],
     "executor_status": executor["data"]["status"],
     "reviewer_status": reviewer["data"]["status"],
-    "final_verdict": finalize["data"]["result"]["verdict"],
+    "final_verdict": reviewer["data"]["result"]["verdict"],
+    "commit_sha": reviewer["data"]["result"]["commit_sha"],
     "error_http": fail_code,
     "error_message": fail_resp["error"],
 }, ensure_ascii=False, indent=2))
