@@ -1,10 +1,13 @@
-Read `inbox/current-task.md` and `state/current.json`.
+The active task and current run state are embedded in this prompt by the host-side runner.
 
-Work only against `project_repo_path` from the task file.
-Use the executor worktree path from the task file.
+Treat `project_repo_path` as the canonical project identity.
+Run commands and make edits only inside `executor_worktree_path`.
+Do not try to read or write `control/inbox`, `control/state`, or `control/outbox` directly from the worktree.
+Write a complete report to `.codex-run/executor-report.md`.
+The host-side runner will copy the report into the control outbox after the run.
+
 Perform the implementation task exactly as written.
 Run the required verification.
-Write a complete report to `outbox/executor-report.md`.
 
 The report must contain:
 1. Summary

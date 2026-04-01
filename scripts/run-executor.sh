@@ -22,14 +22,20 @@ LOCAL_LAST_MESSAGE="$RUN_DIR/executor-last-message.md"
 
 rm -f "$LOCAL_REPORT" "$LOCAL_LAST_MESSAGE"
 
-cat > "$PROMPT_FILE" <<PROMPT
+{
+  cat <<EOF
 You are the executor in an automated local pipeline.
 
 Workspace root: $WORKTREE
 Project repo root: $PROJECT_REPO
 
+Path contract:
+- project_repo_path is the canonical project path for repo identity and context.
+- executor_worktree_path is the only workspace where you may run commands and make edits.
+- Control repo files are not available for direct access from this workspace. The task and state snapshot are embedded below.
+
 Rules:
-- Work only inside the current workspace.
+- Work only inside the executor worktree.
 - Do not change scope.
 - Implement only what the active task requires.
 - Run the minimum relevant verification.
@@ -37,11 +43,19 @@ Rules:
 - Your final assistant message must be short and include the report path.
 
 Executor instructions template:
-$(cat "$CONTROL_DIR/templates/executor-prompt.md")
+EOF
+  cat "$CONTROL_DIR/templates/executor-prompt.md"
+  cat <<'EOF'
+
+Current run state snapshot:
+EOF
+  cat "$STATE_FILE"
+  cat <<'EOF'
 
 Active task:
-$(cat "$TASK_FILE")
-PROMPT
+EOF
+  cat "$TASK_FILE"
+} > "$PROMPT_FILE"
 
 "$SCRIPT_DIR/mark-running.sh" executor >/dev/null
 state_set "executor_running" "" "await_executor_result"

@@ -1,0 +1,245 @@
+[
+  {
+    "id": "controlBridgeRunV1",
+    "name": "Control Bridge Run v1",
+    "active": false,
+    "isArchived": false,
+    "settings": {},
+    "pinData": {},
+    "versionId": "69dff7c8-5d6e-4f25-b74f-975ed6ef22e3",
+    "versionMetadata": null,
+    "nodes": [
+      {
+        "id": "4d46bcb0-0e9d-47a5-9458-a1f4fcc06fb9",
+        "name": "Webhook",
+        "type": "n8n-nodes-base.webhook",
+        "typeVersion": 2.1,
+        "position": [
+          260,
+          300
+        ],
+        "webhookId": "control-bridge-run-v1",
+        "parameters": {
+          "httpMethod": "POST",
+          "path": "control-bridge-run-v1",
+          "responseMode": "responseNode",
+          "options": {}
+        }
+      },
+      {
+        "id": "96e1d7e3-3a86-4b9c-b71b-35e34298fe25",
+        "name": "Prepare Run",
+        "type": "n8n-nodes-base.httpRequest",
+        "typeVersion": 4.4,
+        "position": [
+          520,
+          300
+        ],
+        "parameters": {
+          "method": "POST",
+          "url": "http://host.docker.internal:8787/prepare-run",
+          "authentication": "none",
+          "sendBody": true,
+          "contentType": "json",
+          "specifyBody": "json",
+          "jsonBody": "={{ $json.body ?? $json }}",
+          "options": {}
+        }
+      },
+      {
+        "id": "a9b98e4c-5a93-4e91-bf4e-b5c244de36c8",
+        "name": "Run Executor",
+        "type": "n8n-nodes-base.httpRequest",
+        "typeVersion": 4.4,
+        "position": [
+          760,
+          300
+        ],
+        "parameters": {
+          "method": "POST",
+          "url": "http://host.docker.internal:8787/run-executor",
+          "authentication": "none",
+          "options": {}
+        }
+      },
+      {
+        "id": "72f5a4f7-bf3f-4d31-b0a8-8dd4cb42e53c",
+        "name": "Needs Reviewer?",
+        "type": "n8n-nodes-base.if",
+        "typeVersion": 1,
+        "position": [
+          1000,
+          300
+        ],
+        "parameters": {
+          "conditions": {
+            "string": [
+              {
+                "value1": "={{$json[\"data\"][\"mode\"]}}",
+                "operation": "equal",
+                "value2": "executor+reviewer"
+              }
+            ]
+          },
+          "combineOperation": "all"
+        }
+      },
+      {
+        "id": "0d5bf507-bd8a-4a82-804e-e9d3dbeac82c",
+        "name": "Run Reviewer",
+        "type": "n8n-nodes-base.httpRequest",
+        "typeVersion": 4.4,
+        "position": [
+          1240,
+          180
+        ],
+        "parameters": {
+          "method": "POST",
+          "url": "http://host.docker.internal:8787/run-reviewer",
+          "authentication": "none",
+          "options": {}
+        }
+      },
+      {
+        "id": "d725c1de-cbcf-482f-b07e-f3187ed8a0c3",
+        "name": "Finalize Reviewed Run",
+        "type": "n8n-nodes-base.httpRequest",
+        "typeVersion": 4.4,
+        "position": [
+          1480,
+          180
+        ],
+        "parameters": {
+          "method": "POST",
+          "url": "http://host.docker.internal:8787/finalize-run",
+          "authentication": "none",
+          "sendBody": true,
+          "contentType": "json",
+          "specifyBody": "json",
+          "jsonBody": "={{ (() => { const report = (((($json || {}).data || {}).outbox || {}).reviewer_report || '').toLowerCase(); let verdict = 'changes_requested'; if (report.includes('blocked')) verdict = 'blocked'; else if (report.includes('changes_requested') || report.includes('changes requested')) verdict = 'changes_requested'; else if (report.includes('approved')) verdict = 'approved'; return { status: 'completed', verdict, summary: `Reviewer completed through n8n bridge workflow with verdict: ${verdict}.` }; })() }}",
+          "options": {}
+        }
+      },
+      {
+        "id": "a851f4c9-4c1b-4f43-b15b-fdf43b3488c6",
+        "name": "Finalize Executor-Only Run",
+        "type": "n8n-nodes-base.httpRequest",
+        "typeVersion": 4.4,
+        "position": [
+          1240,
+          420
+        ],
+        "parameters": {
+          "method": "POST",
+          "url": "http://host.docker.internal:8787/finalize-run",
+          "authentication": "none",
+          "sendBody": true,
+          "contentType": "json",
+          "specifyBody": "json",
+          "jsonBody": "={{ ({ status: 'completed', verdict: 'none', summary: 'Executor-only run completed through n8n bridge workflow.' }) }}",
+          "options": {}
+        }
+      },
+      {
+        "id": "db0f6ee0-a1ef-48aa-a4f9-0ef65d572d66",
+        "name": "Respond to Webhook",
+        "type": "n8n-nodes-base.respondToWebhook",
+        "typeVersion": 1.5,
+        "position": [
+          1720,
+          300
+        ],
+        "parameters": {
+          "respondWith": "firstIncomingItem",
+          "options": {}
+        }
+      }
+    ],
+    "connections": {
+      "Webhook": {
+        "main": [
+          [
+            {
+              "node": "Prepare Run",
+              "type": "main",
+              "index": 0
+            }
+          ]
+        ]
+      },
+      "Prepare Run": {
+        "main": [
+          [
+            {
+              "node": "Run Executor",
+              "type": "main",
+              "index": 0
+            }
+          ]
+        ]
+      },
+      "Run Executor": {
+        "main": [
+          [
+            {
+              "node": "Needs Reviewer?",
+              "type": "main",
+              "index": 0
+            }
+          ]
+        ]
+      },
+      "Needs Reviewer?": {
+        "main": [
+          [
+            {
+              "node": "Run Reviewer",
+              "type": "main",
+              "index": 0
+            }
+          ],
+          [
+            {
+              "node": "Finalize Executor-Only Run",
+              "type": "main",
+              "index": 0
+            }
+          ]
+        ]
+      },
+      "Run Reviewer": {
+        "main": [
+          [
+            {
+              "node": "Finalize Reviewed Run",
+              "type": "main",
+              "index": 0
+            }
+          ]
+        ]
+      },
+      "Finalize Reviewed Run": {
+        "main": [
+          [
+            {
+              "node": "Respond to Webhook",
+              "type": "main",
+              "index": 0
+            }
+          ]
+        ]
+      },
+      "Finalize Executor-Only Run": {
+        "main": [
+          [
+            {
+              "node": "Respond to Webhook",
+              "type": "main",
+              "index": 0
+            }
+          ]
+        ]
+      }
+    }
+  }
+]
