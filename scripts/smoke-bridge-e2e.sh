@@ -12,6 +12,7 @@ require_cmd() {
 }
 
 require_cmd curl
+require_cmd git
 require_cmd python3
 require_cmd mktemp
 
@@ -33,9 +34,29 @@ rm -rf "$TMP_CONTROL/.git" "$TMP_CONTROL/bridge/__pycache__"
 
 mkdir -p \
   "$TMP_ROOT/projects/demo" \
-  "$TMP_ROOT/runtime/worktrees/demo-executor" \
-  "$TMP_ROOT/runtime/worktrees/demo-reviewer" \
+  "$TMP_ROOT/runtime/worktrees" \
   "$TMP_ROOT/fakebin"
+
+git -C "$TMP_ROOT/projects/demo" init -b main >/dev/null
+git -C "$TMP_ROOT/projects/demo" config user.name "Smoke Test"
+git -C "$TMP_ROOT/projects/demo" config user.email "smoke@example.com"
+mkdir -p "$TMP_ROOT/projects/demo/docs"
+cat > "$TMP_ROOT/projects/demo/.gitignore" <<'EOF'
+.codex/
+.codex-run/
+EOF
+cat > "$TMP_ROOT/projects/demo/README.md" <<'EOF'
+# Demo Project
+EOF
+cat > "$TMP_ROOT/projects/demo/docs/control-pipeline-smoke.md" <<'EOF'
+# Control Pipeline Smoke
+
+Initial content.
+EOF
+git -C "$TMP_ROOT/projects/demo" add .gitignore README.md docs/control-pipeline-smoke.md
+git -C "$TMP_ROOT/projects/demo" commit -m "Initial smoke fixture" >/dev/null
+git -C "$TMP_ROOT/projects/demo" worktree add --detach "$TMP_ROOT/runtime/worktrees/demo-executor" HEAD >/dev/null
+git -C "$TMP_ROOT/projects/demo" worktree add --detach "$TMP_ROOT/runtime/worktrees/demo-reviewer" HEAD >/dev/null
 
 cat > "$TMP_ROOT/fakebin/codex" <<'EOF'
 #!/usr/bin/env bash
@@ -79,6 +100,8 @@ printf 'Synthetic final message\n' > "$LAST_MESSAGE"
 ROLE="unknown"
 if printf '%s' "$PROMPT" | grep -q 'You are the executor'; then
   ROLE="executor"
+  printf '\nExecutor smoke handoff validated.\n' >> "$WORKTREE/README.md"
+  printf '\nExecutor smoke handoff validated.\n' >> "$WORKTREE/docs/control-pipeline-smoke.md"
   cat > "$WORKTREE/.codex-run/executor-report.md" <<'REPORT'
 # Executor Report
 
@@ -87,16 +110,26 @@ success
 REPORT
 elif printf '%s' "$PROMPT" | grep -q 'You are the reviewer'; then
   ROLE="reviewer"
+  grep -q 'Executor smoke handoff validated\.' "$WORKTREE/README.md" || {
+    echo "reviewer cannot see README handoff change" >&2
+    exit 24
+  }
+  grep -q 'Executor smoke handoff validated\.' "$WORKTREE/docs/control-pipeline-smoke.md" || {
+    echo "reviewer cannot see docs handoff change" >&2
+    exit 24
+  }
+  COMMIT_SHA="$(git -C "$WORKTREE" rev-parse HEAD)"
   cat > "$WORKTREE/.codex-run/reviewer-report.md" <<'REPORT'
 Verdict: approved
 Summary: reviewer approved the synthetic run
-Commit SHA: deadbeef
+Commit SHA: __COMMIT_SHA__
 
 ## Defects found
 - none
 
 ## Verification performed
 - synthetic smoke verification
+- reviewer observed committed README.md and docs/control-pipeline-smoke.md changes
 
 ## Risk assessment
 - low
@@ -107,6 +140,7 @@ Commit SHA: deadbeef
 ## Recommended next action
 - finalize automatically
 REPORT
+  sed -i "s/__COMMIT_SHA__/$COMMIT_SHA/" "$WORKTREE/.codex-run/reviewer-report.md"
 fi
 
 if [[ -f "$STATE_DIR/fail-role" ]] && [[ "$(cat "$STATE_DIR/fail-role")" = "$ROLE" ]]; then
@@ -153,17 +187,21 @@ python3 - <<'PY' \
   "$CURRENT_RESP" \
   "$PREPARE_FAIL_RESP" \
   "$FAIL_CODE" \
-  "$FAIL_RESP"
+  "$FAIL_RESP" \
+  "$TMP_ROOT/runtime/worktrees/demo-reviewer"
 import json
+import re
 import sys
+from pathlib import Path
 
-prepare, executor, reviewer, current_run, prepare_fail, fail_code, fail_resp = sys.argv[1:]
+prepare, executor, reviewer, current_run, prepare_fail, fail_code, fail_resp, reviewer_worktree = sys.argv[1:]
 prepare = json.loads(prepare)
 executor = json.loads(executor)
 reviewer = json.loads(reviewer)
 current_run = json.loads(current_run)
 prepare_fail = json.loads(prepare_fail)
 fail_resp = json.loads(fail_resp)
+reviewer_worktree = Path(reviewer_worktree)
 
 assert prepare["ok"] is True
 assert executor["ok"] is True
@@ -176,15 +214,21 @@ assert reviewer["data"]["status"] == "completed", reviewer
 assert reviewer["data"]["outbox"]["reviewer_report"], reviewer
 assert reviewer["data"]["result"]["verdict"] == "approved", reviewer
 assert reviewer["data"]["result"]["summary"] == "reviewer approved the synthetic run", reviewer
-assert reviewer["data"]["result"]["commit_sha"] == "deadbeef", reviewer
+assert re.fullmatch(r"[0-9a-f]{40}", executor["data"]["result"]["commit_sha"]), executor
+assert reviewer["data"]["result"]["commit_sha"] == executor["data"]["result"]["commit_sha"], reviewer
 assert current_run["data"]["status"] == "completed", current_run
 assert current_run["data"]["result"]["verdict"] == "approved", current_run
-assert current_run["data"]["result"]["commit_sha"] == "deadbeef", current_run
+assert current_run["data"]["result"]["commit_sha"] == executor["data"]["result"]["commit_sha"], current_run
 assert fail_code == "500", fail_code
 assert fail_resp["ok"] is False
 assert "run-executor.sh exited with code 23" in fail_resp["error"], fail_resp
 assert "stdout:" in fail_resp["details"], fail_resp
 assert "stderr:" in fail_resp["details"], fail_resp
+
+readme_text = (reviewer_worktree / "README.md").read_text(encoding="utf-8")
+smoke_doc_text = (reviewer_worktree / "docs" / "control-pipeline-smoke.md").read_text(encoding="utf-8")
+assert "Executor smoke handoff validated." in readme_text
+assert "Executor smoke handoff validated." in smoke_doc_text
 
 print(json.dumps({
     "prepare_status": prepare["data"]["status"],

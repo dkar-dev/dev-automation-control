@@ -41,15 +41,15 @@ status = state.get("status")
 
 allowed = False
 if role == "executor":
-    allowed = status in {"queued", "running"}
+    allowed = status == "queued"
 elif role == "reviewer":
-    allowed = status in {"executor_done", "running"}
+    allowed = status == "executor_done"
 
 if not allowed:
     raise SystemExit(f"Cannot mark {role} running from status: {status}")
 
 now_iso = datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
-state["status"] = "running"
+state["status"] = f"{role}_running"
 state["timestamps"]["updated_at"] = now_iso
 
 if role == "executor":

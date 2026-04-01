@@ -34,6 +34,8 @@ This repo is the control plane for orchestration between ChatGPT Web, n8n, Playw
 - Executor artifacts stay under `.codex-run/`, including `.codex-run/executor-report.md` and `.codex-run/executor-last-message.md`.
 - Reviewer writes to `.codex-run/reviewer-report.md`.
 - Host-side runner scripts copy `.codex-run/*.md` into `control/outbox` and immediately sync them into `runtime/runs/<run_id>/outbox`.
+- After a successful executor run, `run-executor.sh` stages project changes in the executor worktree, creates a handoff commit, and saves that commit to `result.commit_sha`.
+- Before reviewer Codex starts, `run-reviewer.sh` requires `result.commit_sha`, hard-resets the reviewer worktree to that commit, and cleans untracked files so review always starts from the executor snapshot.
 
 ## Reviewer completion contract
 - Reviewer report must begin with these exact machine-readable lines:
@@ -50,6 +52,7 @@ This repo is the control plane for orchestration between ChatGPT Web, n8n, Playw
   - `POST /run-executor`
   - `POST /run-reviewer`
   - `GET /current-run`
+- Status transitions for executor+reviewer runs are `queued -> executor_running -> executor_done -> reviewer_running -> completed|failed`.
 - `POST /finalize-run` is still available for compatibility and manual intervention, but host-side reviewer completion no longer depends on it.
 - Existing n8n workflow export in the repo is intentionally not changed in this task.
 
@@ -91,7 +94,7 @@ This repo is the control plane for orchestration between ChatGPT Web, n8n, Playw
   ./scripts/smoke-bridge-e2e.sh
   ```
 - The smoke script does not use the real Codex binary. It runs against a temporary copy of `control`, starts a temporary bridge, injects a fake `codex`, and validates both success and HTTP 500 failure paths.
-- It specifically verifies that `run-reviewer` now auto-finalizes the run and persists `Commit SHA`.
+- It specifically verifies the commit-based handoff: executor changes are committed, `result.commit_sha` is persisted, reviewer resets to that commit, and reviewer completion still auto-finalizes the run.
 
 ## Manual smoke test
 1. Start the bridge:

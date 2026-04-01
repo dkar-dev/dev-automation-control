@@ -5,9 +5,11 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "$SCRIPT_DIR/common.sh"
 
 require_cmd codex
+require_cmd git
 require_cmd python3
 require_cmd awk
 
+RUN_ID="$(task_get run_id)"
 PROJECT_REPO="$(task_get project_repo_path)"
 WORKTREE="$(task_get executor_worktree_path)"
 RUN_DIR="$(prepare_run_dir "$WORKTREE")"
@@ -21,6 +23,17 @@ LOCAL_REPORT="$RUN_DIR/executor-report.md"
 LOCAL_LAST_MESSAGE="$RUN_DIR/executor-last-message.md"
 
 rm -f "$LOCAL_REPORT" "$LOCAL_LAST_MESSAGE"
+
+executor_fail() {
+  local exit_code="$1"
+  local message="$2"
+  local next_action="${3:-investigate_executor}"
+
+  state_set "failed" "$message" "$next_action"
+  "$SCRIPT_DIR/sync-outbox.sh" >/dev/null || true
+  echo "$message" >&2
+  exit "$exit_code"
+}
 
 {
   cat <<EOF
@@ -71,9 +84,7 @@ rc=$?
 set -e
 
 if [ "$rc" -ne 0 ]; then
-  state_set "failed" "executor failed with exit code $rc" "investigate_executor"
-  "$SCRIPT_DIR/sync-outbox.sh" >/dev/null
-  exit $rc
+  executor_fail "$rc" "executor failed with exit code $rc" "investigate_executor"
 fi
 
 if [ ! -f "$LOCAL_REPORT" ]; then
@@ -88,13 +99,31 @@ if [ ! -f "$LOCAL_REPORT" ]; then
       cat "$LOCAL_LAST_MESSAGE"
     fi
   } > "$OUTBOX_DIR/executor-report.md"
-  state_set "failed" "executor report was not produced" "fix_executor_prompt_or_runner"
-  "$SCRIPT_DIR/sync-outbox.sh" >/dev/null
-  exit 1
+  executor_fail 1 "executor report was not produced" "fix_executor_prompt_or_runner"
 fi
 
 cp "$LOCAL_REPORT" "$OUTBOX_DIR/executor-report.md"
 [ -f "$LOCAL_LAST_MESSAGE" ] && cp "$LOCAL_LAST_MESSAGE" "$OUTBOX_DIR/executor-last-message.md" || true
+
+if ! git -C "$WORKTREE" add -A -- .; then
+  executor_fail 1 "failed to stage executor changes for handoff commit" "fix_executor_handoff_git"
+fi
+
+if git -C "$WORKTREE" diff --cached --quiet --exit-code; then
+  executor_fail 1 "executor finished successfully but produced no project changes to commit" "fix_executor_scope_or_task"
+fi
+
+if ! git -C "$WORKTREE" commit -m "Executor handoff: $RUN_ID" >/dev/null; then
+  executor_fail 1 "failed to create executor handoff commit" "fix_executor_handoff_git"
+fi
+
+if ! COMMIT_SHA="$(git -C "$WORKTREE" rev-parse HEAD)"; then
+  executor_fail 1 "failed to read executor handoff commit sha" "fix_executor_handoff_git"
+fi
+
+if ! "$SCRIPT_DIR/set-commit-sha.sh" "$COMMIT_SHA" >/dev/null; then
+  executor_fail 1 "failed to persist executor handoff commit sha" "fix_executor_handoff_git"
+fi
 
 state_set "executor_done" "" "run_reviewer"
 "$SCRIPT_DIR/sync-outbox.sh" >/dev/null
