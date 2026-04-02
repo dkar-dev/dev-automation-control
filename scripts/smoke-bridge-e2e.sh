@@ -58,6 +58,17 @@ git -C "$TMP_ROOT/projects/demo" commit -m "Initial smoke fixture" >/dev/null
 git -C "$TMP_ROOT/projects/demo" worktree add --detach "$TMP_ROOT/runtime/worktrees/demo-executor" HEAD >/dev/null
 git -C "$TMP_ROOT/projects/demo" worktree add --detach "$TMP_ROOT/runtime/worktrees/demo-reviewer" HEAD >/dev/null
 
+printf '\nStale executor branch state.\n' >> "$TMP_ROOT/runtime/worktrees/demo-executor/README.md"
+git -C "$TMP_ROOT/runtime/worktrees/demo-executor" add README.md
+git -C "$TMP_ROOT/runtime/worktrees/demo-executor" commit -m "Stale executor state" >/dev/null
+printf 'stale scratch file\n' > "$TMP_ROOT/runtime/worktrees/demo-executor/stale-untracked.txt"
+mkdir -p "$TMP_ROOT/runtime/worktrees/demo-executor/.codex-run"
+printf 'stale executor artifact\n' > "$TMP_ROOT/runtime/worktrees/demo-executor/.codex-run/stale-before-run.md"
+
+printf 'stale reviewer scratch file\n' > "$TMP_ROOT/runtime/worktrees/demo-reviewer/stale-untracked.txt"
+mkdir -p "$TMP_ROOT/runtime/worktrees/demo-reviewer/.codex-run"
+printf 'stale reviewer artifact\n' > "$TMP_ROOT/runtime/worktrees/demo-reviewer/.codex-run/stale-before-run.md"
+
 cat > "$TMP_ROOT/fakebin/codex" <<'EOF'
 #!/usr/bin/env bash
 set -euo pipefail
@@ -110,12 +121,38 @@ success
 REPORT
 elif printf '%s' "$PROMPT" | grep -q 'You are the reviewer'; then
   ROLE="reviewer"
+  [[ ! -e "$WORKTREE/stale-untracked.txt" ]] || {
+    echo "reviewer worktree still has stale untracked file" >&2
+    exit 24
+  }
+  [[ ! -e "$WORKTREE/.codex-run/stale-before-run.md" ]] || {
+    echo "reviewer worktree still has stale .codex-run artifact" >&2
+    exit 24
+  }
   grep -q 'Executor smoke handoff validated\.' "$WORKTREE/README.md" || {
     echo "reviewer cannot see README handoff change" >&2
     exit 24
   }
   grep -q 'Executor smoke handoff validated\.' "$WORKTREE/docs/control-pipeline-smoke.md" || {
     echo "reviewer cannot see docs handoff change" >&2
+    exit 24
+  }
+  [[ "$(git -C "$WORKTREE" rev-parse HEAD^)" = "$(git -C "$WORKTREE" rev-parse main)" ]] || {
+    echo "handoff commit parent does not match branch_base" >&2
+    exit 24
+  }
+  mapfile -t COMMITTED_FILES < <(git -C "$WORKTREE" diff-tree --no-commit-id --name-only -r HEAD | sort)
+  [[ "${#COMMITTED_FILES[@]}" -eq 2 ]] || {
+    echo "handoff commit includes unexpected files" >&2
+    printf '%s\n' "${COMMITTED_FILES[@]}" >&2
+    exit 24
+  }
+  [[ "${COMMITTED_FILES[0]}" = "README.md" ]] || {
+    echo "handoff commit is missing README.md" >&2
+    exit 24
+  }
+  [[ "${COMMITTED_FILES[1]}" = "docs/control-pipeline-smoke.md" ]] || {
+    echo "handoff commit is missing docs/control-pipeline-smoke.md" >&2
     exit 24
   }
   COMMIT_SHA="$(git -C "$WORKTREE" rev-parse HEAD)"
@@ -174,6 +211,7 @@ REVIEWER_RESP="$(curl -sS -X POST http://127.0.0.1:18787/run-reviewer -H 'Conten
 CURRENT_RESP="$(curl -sS http://127.0.0.1:18787/current-run)"
 
 printf 'executor' > "$TMP_ROOT/fail-role"
+sleep 1
 PREPARE_FAIL_RESP="$(curl -sS -X POST http://127.0.0.1:18787/prepare-run -H 'Content-Type: application/json' -d "$PAYLOAD")"
 FAIL_BODY="$(mktemp)"
 FAIL_CODE="$(curl -sS -o "$FAIL_BODY" -w '%{http_code}' -X POST http://127.0.0.1:18787/run-executor -H 'Content-Type: application/json' -d '{}')"

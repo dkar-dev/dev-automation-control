@@ -10,19 +10,13 @@ require_cmd python3
 require_cmd awk
 
 RUN_ID="$(task_get run_id)"
+BRANCH_BASE="$(task_get branch_base)"
 PROJECT_REPO="$(task_get project_repo_path)"
 WORKTREE="$(task_get executor_worktree_path)"
-RUN_DIR="$(prepare_run_dir "$WORKTREE")"
 
 ensure_file "$TASK_FILE"
 ensure_dir "$PROJECT_REPO"
 ensure_dir "$WORKTREE"
-
-PROMPT_FILE="$RUN_DIR/executor-prompt.md"
-LOCAL_REPORT="$RUN_DIR/executor-report.md"
-LOCAL_LAST_MESSAGE="$RUN_DIR/executor-last-message.md"
-
-rm -f "$LOCAL_REPORT" "$LOCAL_LAST_MESSAGE"
 
 executor_fail() {
   local exit_code="$1"
@@ -34,6 +28,24 @@ executor_fail() {
   echo "$message" >&2
   exit "$exit_code"
 }
+
+"$SCRIPT_DIR/mark-running.sh" executor >/dev/null
+state_set "executor_running" "" "await_executor_result"
+
+if ! git -C "$WORKTREE" reset --hard "$BRANCH_BASE" >/dev/null; then
+  executor_fail 1 "failed to reset executor worktree to branch_base $BRANCH_BASE" "fix_executor_worktree_sync"
+fi
+
+if ! git -C "$WORKTREE" clean -fdx >/dev/null; then
+  executor_fail 1 "failed to clean executor worktree before execution" "fix_executor_worktree_sync"
+fi
+
+RUN_DIR="$(prepare_run_dir "$WORKTREE")"
+PROMPT_FILE="$RUN_DIR/executor-prompt.md"
+LOCAL_REPORT="$RUN_DIR/executor-report.md"
+LOCAL_LAST_MESSAGE="$RUN_DIR/executor-last-message.md"
+
+rm -f "$LOCAL_REPORT" "$LOCAL_LAST_MESSAGE"
 
 {
   cat <<EOF
@@ -70,9 +82,6 @@ EOF
   cat "$TASK_FILE"
 } > "$PROMPT_FILE"
 
-"$SCRIPT_DIR/mark-running.sh" executor >/dev/null
-state_set "executor_running" "" "await_executor_result"
-
 set +e
 codex exec \
   -C "$WORKTREE" \
@@ -105,12 +114,18 @@ fi
 cp "$LOCAL_REPORT" "$OUTBOX_DIR/executor-report.md"
 [ -f "$LOCAL_LAST_MESSAGE" ] && cp "$LOCAL_LAST_MESSAGE" "$OUTBOX_DIR/executor-last-message.md" || true
 
-if ! git -C "$WORKTREE" add -A -- .; then
-  executor_fail 1 "failed to stage executor changes for handoff commit" "fix_executor_handoff_git"
+mapfile -d '' -t CHANGED_FILES < <(git -C "$WORKTREE" ls-files -z -m -o --exclude-standard)
+
+if [[ "${#CHANGED_FILES[@]}" -eq 0 ]]; then
+  executor_fail 1 "executor finished successfully but produced no task-scoped project changes to commit" "fix_executor_scope_or_task"
+fi
+
+if ! git -C "$WORKTREE" add -- "${CHANGED_FILES[@]}"; then
+  executor_fail 1 "failed to stage executor project changes for handoff commit" "fix_executor_handoff_git"
 fi
 
 if git -C "$WORKTREE" diff --cached --quiet --exit-code; then
-  executor_fail 1 "executor finished successfully but produced no project changes to commit" "fix_executor_scope_or_task"
+  executor_fail 1 "executor finished successfully but staged no task-scoped project changes to commit" "fix_executor_scope_or_task"
 fi
 
 if ! git -C "$WORKTREE" commit -m "Executor handoff: $RUN_ID" >/dev/null; then
