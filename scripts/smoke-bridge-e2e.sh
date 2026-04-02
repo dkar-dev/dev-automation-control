@@ -116,8 +116,25 @@ if printf '%s' "$PROMPT" | grep -q 'You are the executor'; then
   cat > "$WORKTREE/.codex-run/executor-report.md" <<'REPORT'
 # Executor Report
 
-## Status
-success
+## Summary
+Updated README.md and docs/control-pipeline-smoke.md.
+
+## Files changed
+- README.md
+- docs/control-pipeline-smoke.md
+
+## Commands run
+- synthetic smoke executor
+
+## Verification results
+- synthetic smoke verification
+
+## Open issues
+- The handoff commit could not be created from the executor sandbox.
+- Git metadata appears read-only in this environment.
+
+## Recommended next action
+- Create the handoff commit outside the executor sandbox.
 REPORT
 elif printf '%s' "$PROMPT" | grep -q 'You are the reviewer'; then
   ROLE="reviewer"
@@ -248,6 +265,10 @@ assert current_run["ok"] is True
 assert prepare_fail["ok"] is True
 assert executor["data"]["status"] == "executor_done", executor
 assert executor["data"]["outbox"]["executor_report"], executor
+assert "Commit SHA: " + executor["data"]["result"]["commit_sha"] in executor["data"]["outbox"]["executor_report"], executor
+assert "Status: created" in executor["data"]["outbox"]["executor_report"], executor
+assert "commit could not be created" not in executor["data"]["outbox"]["executor_report"].lower(), executor
+assert "read-only git metadata" not in executor["data"]["outbox"]["executor_report"].lower(), executor
 assert reviewer["data"]["status"] == "completed", reviewer
 assert reviewer["data"]["outbox"]["reviewer_report"], reviewer
 assert reviewer["data"]["result"]["verdict"] == "approved", reviewer

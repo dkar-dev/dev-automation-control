@@ -29,6 +29,56 @@ executor_fail() {
   exit "$exit_code"
 }
 
+publish_executor_report() {
+  local commit_sha="$1"
+
+  python3 - "$LOCAL_REPORT" "$OUTBOX_DIR/executor-report.md" "$commit_sha" <<'PY'
+import re
+import sys
+from pathlib import Path
+
+src_path = Path(sys.argv[1])
+dst_path = Path(sys.argv[2])
+commit_sha = sys.argv[3].strip()
+
+raw = src_path.read_text(encoding="utf-8").lstrip("\ufeff")
+lines = raw.splitlines()
+
+if lines and lines[0].strip() == "# Executor Report":
+    body_lines = lines[1:]
+else:
+    body_lines = lines
+
+stale_patterns = [
+    r"commit could not be created",
+    r"could not create (?:the )?handoff commit",
+    r"read-only git metadata",
+]
+
+filtered_lines = [
+    line
+    for line in body_lines
+    if not any(re.search(pattern, line, flags=re.IGNORECASE) for pattern in stale_patterns)
+]
+
+clean_body = "\n".join(filtered_lines).strip()
+
+parts = [
+    "# Executor Report",
+    "",
+    "## Handoff commit",
+    "",
+    "Status: created",
+    f"Commit SHA: {commit_sha}",
+]
+
+if clean_body:
+    parts.extend(["", clean_body])
+
+dst_path.write_text("\n".join(parts).rstrip() + "\n", encoding="utf-8")
+PY
+}
+
 "$SCRIPT_DIR/mark-running.sh" executor >/dev/null
 state_set "executor_running" "" "await_executor_result"
 
@@ -139,6 +189,8 @@ fi
 if ! "$SCRIPT_DIR/set-commit-sha.sh" "$COMMIT_SHA" >/dev/null; then
   executor_fail 1 "failed to persist executor handoff commit sha" "fix_executor_handoff_git"
 fi
+
+publish_executor_report "$COMMIT_SHA"
 
 state_set "executor_done" "" "run_reviewer"
 "$SCRIPT_DIR/sync-outbox.sh" >/dev/null
