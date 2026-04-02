@@ -18,6 +18,48 @@ This repo is the control plane for orchestration between ChatGPT Web, n8n, Playw
 - `GET /current-run` now exposes `instruction_profile`, `instruction_overlays`, `instructions_repo_path`, `instructions_revision`, and `resolved_instruction_files`.
 - Existing stub scripts `control/scripts/run-executor-stub.sh` and `control/scripts/run-reviewer-stub.sh` remain available only for local smoke tests that simulate old `Execute Command` behavior.
 
+## Instructions Repo Contract
+Supported structure:
+```text
+profiles/<profile>/shared.md
+profiles/<profile>/executor.md
+profiles/<profile>/reviewer.md
+overlays/<name>.md
+overlays/<name>/shared.md
+overlays/<name>/executor.md
+overlays/<name>/reviewer.md
+```
+- Required profile files:
+  - `profiles/<profile>/executor.md`
+  - `profiles/<profile>/reviewer.md`
+- Optional profile file:
+  - `profiles/<profile>/shared.md`
+- Overlay forms:
+  - flat overlay file: `overlays/<name>.md`
+  - directory overlay files: `overlays/<name>/shared.md`, `overlays/<name>/executor.md`, `overlays/<name>/reviewer.md`
+- Requested overlays are applied strictly in the order provided by `instruction_overlays`.
+- Resolution order for a role is:
+  - `profiles/<profile>/shared.md`
+  - `profiles/<profile>/<role>.md`
+  - for each overlay in request order:
+    - `overlays/<name>.md`
+    - `overlays/<name>/shared.md`
+    - `overlays/<name>/<role>.md`
+- For overlays, at least one supported file must exist. Missing overlay content is a validation error.
+- What n8n sends:
+  - `instruction_profile`
+  - `instruction_overlays`
+  - `instructions_repo_path`
+- What control resolves locally:
+  - prompt assembly for executor and reviewer
+  - `instructions_revision`
+  - `resolved_instruction_files`
+- What is persisted into run state and `GET /current-run`:
+  - selectors from input: `instruction_profile`, `instruction_overlays`, `instructions_repo_path`
+  - resolved traceability: `instructions_revision`, `resolved_instruction_files`
+- `resolved_instruction_files` in state/current-run is the de-duplicated union of files resolved so far for the current run.
+- `runtime/runs/<run_id>/resolved-executor-instructions.json` and `runtime/runs/<run_id>/resolved-reviewer-instructions.json` keep the role-specific manifests used to build each prompt.
+
 ## Relevant bridge endpoints
 - `GET /healthz`
 - `GET /current-run`
@@ -102,6 +144,19 @@ This repo is the control plane for orchestration between ChatGPT Web, n8n, Playw
   ```
 - The smoke script does not use the real Codex binary. It runs against a temporary copy of `control`, starts a temporary bridge, injects a fake `codex`, and validates both success and HTTP 500 failure paths.
 - It specifically verifies the commit-based handoff: executor changes are committed, `result.commit_sha` is persisted, reviewer resets to that commit, and reviewer completion still auto-finalizes the run.
+
+## Instruction Smoke Test
+- Validate a concrete instructions repo shape directly:
+  ```bash
+  cd /home/dkar/workspace/control
+  ./scripts/validate-instructions-repo.sh ./fixtures/instructions-repo default docs-only strict-review
+  ```
+- Run the dedicated instruction-resolution smoke test:
+  ```bash
+  cd /home/dkar/workspace/control
+  ./scripts/smoke-instructions-pipeline.sh
+  ```
+- The dedicated smoke test uses the deterministic fixture repo under [`fixtures/instructions-repo`](/home/dkar/workspace/control/fixtures/instructions-repo/profiles/default/shared.md), initializes it as a temporary git repo, prepares a run with selectors only, resolves instructions for both roles, builds both prompt files, and verifies the exported instruction metadata.
 
 ## Manual smoke test
 1. Start the bridge:
