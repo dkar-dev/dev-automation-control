@@ -13,6 +13,9 @@ This repo is the control plane for orchestration between ChatGPT Web, n8n, Playw
 - Real executor/reviewer runs are started by the host-side HTTP bridge, not by `Execute Command` inside the n8n Docker container.
 - n8n should call `http://host.docker.internal:8787` with `HTTP Request` nodes.
 - The bridge runs `control/scripts/run-executor.sh` and `control/scripts/run-reviewer.sh` on the host/WSL side, where Codex, worktrees, runtime, and project paths actually exist.
+- n8n should send symbolic instruction selectors only: `instruction_profile`, `instruction_overlays`, and `instructions_repo_path`.
+- The control layer resolves instruction files on the host, records the repo revision and exact files used, then builds the final executor/reviewer prompts locally.
+- `GET /current-run` now exposes `instruction_profile`, `instruction_overlays`, `instructions_repo_path`, `instructions_revision`, and `resolved_instruction_files`.
 - Existing stub scripts `control/scripts/run-executor-stub.sh` and `control/scripts/run-reviewer-stub.sh` remain available only for local smoke tests that simulate old `Execute Command` behavior.
 
 ## Relevant bridge endpoints
@@ -28,12 +31,13 @@ This repo is the control plane for orchestration between ChatGPT Web, n8n, Playw
 - `POST /finalize-run`
 
 ## Prompt path contract v2
-- The runner embeds the active task, current run state, and executor report directly into the Codex prompt.
+- The runner resolves instruction selectors on the host, then embeds the active task, current run state, executor report, and resolved instruction content directly into the Codex prompt.
 - `project_repo_path` identifies the canonical project repository for context only.
 - `executor_worktree_path` and `reviewer_worktree_path` are the only writable workspaces for the real runs.
 - Executor artifacts stay under `.codex-run/`, including `.codex-run/executor-report.md` and `.codex-run/executor-last-message.md`.
 - Reviewer writes to `.codex-run/reviewer-report.md`.
 - Host-side runner scripts copy `.codex-run/*.md` into `control/outbox` and immediately sync them into `runtime/runs/<run_id>/outbox`.
+- `resolve-instructions.sh` records `instructions_revision` and `resolved_instruction_files` in run state for traceability, and `build-executor-prompt.sh` / `build-reviewer-prompt.sh` assemble the final prompts on the host.
 - After a successful executor run, `run-executor.sh` stages project changes in the executor worktree, creates a handoff commit, and saves that commit to `result.commit_sha`.
 - Before reviewer Codex starts, `run-reviewer.sh` requires `result.commit_sha`, hard-resets the reviewer worktree to that commit, and cleans untracked files so review always starts from the executor snapshot.
 
@@ -83,7 +87,10 @@ This repo is the control plane for orchestration between ChatGPT Web, n8n, Playw
        "branch_base": "main",
        "auto_commit": false,
        "source": "n8n",
-       "thread_label": "mcp-clickup-dev"
+       "thread_label": "mcp-clickup-dev",
+       "instruction_profile": "default",
+       "instruction_overlays": ["docs-only", "strict-review"],
+       "instructions_repo_path": "/home/dkar/workspace/instructions"
      }'
    ```
 

@@ -73,44 +73,13 @@ LOCAL_LAST_MESSAGE="$RUN_DIR/reviewer-last-message.md"
 cp "$OUTBOX_DIR/executor-report.md" "$LOCAL_INPUT_EXECUTOR_REPORT"
 rm -f "$LOCAL_REPORT" "$LOCAL_LAST_MESSAGE"
 
-{
-  cat <<EOF
-You are the reviewer in an automated local pipeline.
+if ! "$SCRIPT_DIR/resolve-instructions.sh" reviewer >/dev/null; then
+  reviewer_prep_fail "failed to resolve reviewer instructions" "fix_instruction_resolution"
+fi
 
-Workspace root: $WORKTREE
-Project repo root: $PROJECT_REPO
-
-Path contract:
-- project_repo_path is the canonical project path for repo identity and context.
-- reviewer_worktree_path is the only workspace where you may run commands and make edits.
-- Control repo files are not available for direct access from this workspace. The task, state snapshot, and executor report are embedded below.
-
-Rules:
-- Work only inside the reviewer worktree.
-- Review critically. Do not trust the executor report.
-- Re-run or extend verification where needed.
-- Write the review report to: .codex-run/reviewer-report.md
-- Your final assistant message must be short and include the report path.
-
-Reviewer instructions template:
-EOF
-  cat "$CONTROL_DIR/templates/reviewer-prompt.md"
-  cat <<'EOF'
-
-Current run state snapshot:
-EOF
-  cat "$STATE_FILE"
-  cat <<'EOF'
-
-Executor report:
-EOF
-  cat "$LOCAL_INPUT_EXECUTOR_REPORT"
-  cat <<'EOF'
-
-Active task:
-EOF
-  cat "$TASK_FILE"
-} > "$PROMPT_FILE"
+if ! "$SCRIPT_DIR/build-reviewer-prompt.sh" "$PROMPT_FILE" "$LOCAL_INPUT_EXECUTOR_REPORT"; then
+  reviewer_prep_fail "failed to build reviewer prompt from resolved instructions" "fix_instruction_resolution"
+fi
 
 "$SCRIPT_DIR/mark-running.sh" reviewer >/dev/null
 state_set "reviewer_running" "" "await_reviewer_result"

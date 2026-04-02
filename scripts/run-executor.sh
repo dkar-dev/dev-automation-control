@@ -93,40 +93,13 @@ LOCAL_LAST_MESSAGE="$RUN_DIR/executor-last-message.md"
 
 rm -f "$LOCAL_REPORT" "$LOCAL_LAST_MESSAGE"
 
-{
-  cat <<EOF
-You are the executor in an automated local pipeline.
+if ! "$SCRIPT_DIR/resolve-instructions.sh" executor >/dev/null; then
+  executor_fail 1 "failed to resolve executor instructions" "fix_instruction_resolution"
+fi
 
-Workspace root: $WORKTREE
-Project repo root: $PROJECT_REPO
-
-Path contract:
-- project_repo_path is the canonical project path for repo identity and context.
-- executor_worktree_path is the only workspace where you may run commands and make edits.
-- Control repo files are not available for direct access from this workspace. The task and state snapshot are embedded below.
-
-Rules:
-- Work only inside the executor worktree.
-- Do not change scope.
-- Implement only what the active task requires.
-- Run the minimum relevant verification.
-- Write the execution report to: .codex-run/executor-report.md
-- Your final assistant message must be short and include the report path.
-
-Executor instructions template:
-EOF
-  cat "$CONTROL_DIR/templates/executor-prompt.md"
-  cat <<'EOF'
-
-Current run state snapshot:
-EOF
-  cat "$STATE_FILE"
-  cat <<'EOF'
-
-Active task:
-EOF
-  cat "$TASK_FILE"
-} > "$PROMPT_FILE"
+if ! "$SCRIPT_DIR/build-executor-prompt.sh" "$PROMPT_FILE"; then
+  executor_fail 1 "failed to build executor prompt from resolved instructions" "fix_instruction_resolution"
+fi
 
 set +e
 codex exec \

@@ -47,6 +47,8 @@ required = [
     "auto_commit",
     "source",
     "thread_label",
+    "instruction_profile",
+    "instructions_repo_path",
 ]
 missing = [k for k in required if k not in payload]
 if missing:
@@ -59,6 +61,27 @@ branch_base = str(payload["branch_base"]).strip()
 auto_commit = bool(payload["auto_commit"])
 source = str(payload["source"]).strip()
 thread_label = str(payload["thread_label"]).strip()
+instruction_profile = str(payload["instruction_profile"]).strip()
+instructions_repo_raw = str(payload["instructions_repo_path"]).strip()
+instruction_overlays = payload.get("instruction_overlays")
+
+if not instruction_profile:
+    raise SystemExit("instruction_profile must not be empty")
+
+if not instructions_repo_raw:
+    raise SystemExit("instructions_repo_path must not be empty")
+
+if instruction_overlays is None:
+    instruction_overlays = []
+if not isinstance(instruction_overlays, list) or any(
+    not isinstance(item, str) or not item.strip() for item in instruction_overlays
+):
+    raise SystemExit("instruction_overlays must be an array of non-empty strings")
+
+instructions_repo = Path(instructions_repo_raw).expanduser()
+if not instructions_repo.is_absolute():
+    instructions_repo = workspace_dir / instructions_repo
+instructions_repo = instructions_repo.resolve()
 
 if mode not in {"executor-only", "executor+reviewer"}:
     raise SystemExit("mode must be 'executor-only' or 'executor+reviewer'")
@@ -74,6 +97,8 @@ if not executor_worktree.exists():
     errors.append(f"Executor worktree not found: {executor_worktree}")
 if mode == "executor+reviewer" and not reviewer_worktree.exists():
     errors.append(f"Reviewer worktree not found: {reviewer_worktree}")
+if not instructions_repo.exists():
+    errors.append(f"Instructions repo not found: {instructions_repo}")
 if errors:
     raise SystemExit("\n".join(errors))
 
@@ -99,6 +124,11 @@ state = {
     "auto_commit": auto_commit,
     "source": source,
     "thread_label": thread_label,
+    "instruction_profile": instruction_profile,
+    "instruction_overlays": instruction_overlays,
+    "instructions_repo_path": str(instructions_repo),
+    "instructions_revision": None,
+    "resolved_instruction_files": [],
     "paths": {
         "task_file": "inbox/current-task.md",
         "active_outbox_dir": "outbox",
@@ -145,6 +175,9 @@ branch_base: {branch_base}
 auto_commit: {"true" if auto_commit else "false"}
 source: {source}
 thread_label: {thread_label}
+instruction_profile: {instruction_profile}
+instruction_overlays: {json.dumps(instruction_overlays, ensure_ascii=False)}
+instructions_repo_path: {instructions_repo}
 project_repo_path: {project_dir}
 executor_worktree_path: {executor_worktree}
 reviewer_worktree_path: {reviewer_worktree}

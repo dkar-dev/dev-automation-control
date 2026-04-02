@@ -34,6 +34,7 @@ rm -rf "$TMP_CONTROL/.git" "$TMP_CONTROL/bridge/__pycache__"
 
 mkdir -p \
   "$TMP_ROOT/projects/demo" \
+  "$TMP_ROOT/instructions" \
   "$TMP_ROOT/runtime/worktrees" \
   "$TMP_ROOT/fakebin"
 
@@ -57,6 +58,31 @@ git -C "$TMP_ROOT/projects/demo" add .gitignore README.md docs/control-pipeline-
 git -C "$TMP_ROOT/projects/demo" commit -m "Initial smoke fixture" >/dev/null
 git -C "$TMP_ROOT/projects/demo" worktree add --detach "$TMP_ROOT/runtime/worktrees/demo-executor" HEAD >/dev/null
 git -C "$TMP_ROOT/projects/demo" worktree add --detach "$TMP_ROOT/runtime/worktrees/demo-reviewer" HEAD >/dev/null
+
+git -C "$TMP_ROOT/instructions" init -b main >/dev/null
+git -C "$TMP_ROOT/instructions" config user.name "Smoke Test"
+git -C "$TMP_ROOT/instructions" config user.email "smoke@example.com"
+mkdir -p \
+  "$TMP_ROOT/instructions/profiles/default" \
+  "$TMP_ROOT/instructions/overlays/strict-review"
+cat > "$TMP_ROOT/instructions/profiles/default/shared.md" <<'EOF'
+Shared profile instruction marker.
+EOF
+cat > "$TMP_ROOT/instructions/profiles/default/executor.md" <<'EOF'
+Executor profile instruction marker.
+EOF
+cat > "$TMP_ROOT/instructions/profiles/default/reviewer.md" <<'EOF'
+Reviewer profile instruction marker.
+EOF
+cat > "$TMP_ROOT/instructions/overlays/docs-only.md" <<'EOF'
+Docs overlay instruction marker.
+EOF
+cat > "$TMP_ROOT/instructions/overlays/strict-review/reviewer.md" <<'EOF'
+Strict review overlay instruction marker.
+EOF
+git -C "$TMP_ROOT/instructions" add .
+git -C "$TMP_ROOT/instructions" commit -m "Initial instructions fixture" >/dev/null
+INSTRUCTIONS_REV="$(git -C "$TMP_ROOT/instructions" rev-parse HEAD)"
 
 printf '\nStale executor branch state.\n' >> "$TMP_ROOT/runtime/worktrees/demo-executor/README.md"
 git -C "$TMP_ROOT/runtime/worktrees/demo-executor" add README.md
@@ -111,6 +137,22 @@ printf 'Synthetic final message\n' > "$LAST_MESSAGE"
 ROLE="unknown"
 if printf '%s' "$PROMPT" | grep -q 'You are the executor'; then
   ROLE="executor"
+  grep -q 'Shared profile instruction marker\.' <<<"$PROMPT" || {
+    echo "executor prompt is missing shared profile instructions" >&2
+    exit 24
+  }
+  grep -q 'Executor profile instruction marker\.' <<<"$PROMPT" || {
+    echo "executor prompt is missing executor profile instructions" >&2
+    exit 24
+  }
+  grep -q 'Docs overlay instruction marker\.' <<<"$PROMPT" || {
+    echo "executor prompt is missing overlay instructions" >&2
+    exit 24
+  }
+  if grep -q 'Strict review overlay instruction marker\.' <<<"$PROMPT"; then
+    echo "executor prompt unexpectedly includes reviewer-only overlay instructions" >&2
+    exit 24
+  fi
   printf '\nExecutor smoke handoff validated.\n' >> "$WORKTREE/README.md"
   printf '\nExecutor smoke handoff validated.\n' >> "$WORKTREE/docs/control-pipeline-smoke.md"
   cat > "$LAST_MESSAGE" <<'MESSAGE'
@@ -142,6 +184,22 @@ Updated README.md and docs/control-pipeline-smoke.md.
 REPORT
 elif printf '%s' "$PROMPT" | grep -q 'You are the reviewer'; then
   ROLE="reviewer"
+  grep -q 'Shared profile instruction marker\.' <<<"$PROMPT" || {
+    echo "reviewer prompt is missing shared profile instructions" >&2
+    exit 24
+  }
+  grep -q 'Reviewer profile instruction marker\.' <<<"$PROMPT" || {
+    echo "reviewer prompt is missing reviewer profile instructions" >&2
+    exit 24
+  }
+  grep -q 'Docs overlay instruction marker\.' <<<"$PROMPT" || {
+    echo "reviewer prompt is missing shared overlay instructions" >&2
+    exit 24
+  }
+  grep -q 'Strict review overlay instruction marker\.' <<<"$PROMPT" || {
+    echo "reviewer prompt is missing reviewer overlay instructions" >&2
+    exit 24
+  }
   [[ ! -e "$WORKTREE/stale-untracked.txt" ]] || {
     echo "reviewer worktree still has stale untracked file" >&2
     exit 24
@@ -224,7 +282,10 @@ for _ in 1 2 3 4 5 6 7 8 9 10; do
   sleep 0.3
 done
 
-PAYLOAD='{"project":"demo","task_text":"Smoke test real host-side runner flow.","mode":"executor+reviewer","branch_base":"main","auto_commit":false,"source":"n8n","thread_label":"smoke-test"}'
+PAYLOAD="$(cat <<EOF
+{"project":"demo","task_text":"Smoke test real host-side runner flow.","mode":"executor+reviewer","branch_base":"main","auto_commit":false,"source":"n8n","thread_label":"smoke-test","instruction_profile":"default","instruction_overlays":["docs-only","strict-review"],"instructions_repo_path":"$TMP_ROOT/instructions"}
+EOF
+)"
 
 PREPARE_RESP="$(curl -sS -X POST http://127.0.0.1:18787/prepare-run -H 'Content-Type: application/json' -d "$PAYLOAD")"
 EXECUTOR_RESP="$(curl -sS -X POST http://127.0.0.1:18787/run-executor -H 'Content-Type: application/json' -d '{}')"
@@ -247,13 +308,36 @@ python3 - <<'PY' \
   "$PREPARE_FAIL_RESP" \
   "$FAIL_CODE" \
   "$FAIL_RESP" \
-  "$TMP_ROOT/runtime/worktrees/demo-reviewer"
+  "$TMP_ROOT/runtime/worktrees/demo-reviewer" \
+  "$TMP_ROOT/instructions" \
+  "$INSTRUCTIONS_REV" \
+  "$TMP_ROOT/instructions/profiles/default/shared.md" \
+  "$TMP_ROOT/instructions/profiles/default/executor.md" \
+  "$TMP_ROOT/instructions/profiles/default/reviewer.md" \
+  "$TMP_ROOT/instructions/overlays/docs-only.md" \
+  "$TMP_ROOT/instructions/overlays/strict-review/reviewer.md"
 import json
 import re
 import sys
 from pathlib import Path
 
-prepare, executor, reviewer, current_run, prepare_fail, fail_code, fail_resp, reviewer_worktree = sys.argv[1:]
+(
+    prepare,
+    executor,
+    reviewer,
+    current_run,
+    prepare_fail,
+    fail_code,
+    fail_resp,
+    reviewer_worktree,
+    instructions_repo,
+    instructions_rev,
+    shared_instruction,
+    executor_instruction,
+    reviewer_instruction,
+    docs_overlay,
+    strict_review_overlay,
+) = sys.argv[1:]
 prepare = json.loads(prepare)
 executor = json.loads(executor)
 reviewer = json.loads(reviewer)
@@ -261,13 +345,33 @@ current_run = json.loads(current_run)
 prepare_fail = json.loads(prepare_fail)
 fail_resp = json.loads(fail_resp)
 reviewer_worktree = Path(reviewer_worktree)
+instructions_repo = str(Path(instructions_repo))
+executor_instruction_files = {
+    str(Path(shared_instruction)),
+    str(Path(executor_instruction)),
+    str(Path(docs_overlay)),
+}
+reviewer_instruction_files = executor_instruction_files | {
+    str(Path(reviewer_instruction)),
+    str(Path(strict_review_overlay)),
+}
 
 assert prepare["ok"] is True
 assert executor["ok"] is True
 assert reviewer["ok"] is True
 assert current_run["ok"] is True
 assert prepare_fail["ok"] is True
+assert prepare["data"]["instruction_profile"] == "default", prepare
+assert prepare["data"]["instruction_overlays"] == ["docs-only", "strict-review"], prepare
+assert prepare["data"]["instructions_repo_path"] == instructions_repo, prepare
+assert prepare["data"]["instructions_revision"] is None, prepare
+assert prepare["data"]["resolved_instruction_files"] == [], prepare
 assert executor["data"]["status"] == "executor_done", executor
+assert executor["data"]["instruction_profile"] == "default", executor
+assert executor["data"]["instruction_overlays"] == ["docs-only", "strict-review"], executor
+assert executor["data"]["instructions_repo_path"] == instructions_repo, executor
+assert executor["data"]["instructions_revision"] == instructions_rev, executor
+assert set(executor["data"]["resolved_instruction_files"]) == executor_instruction_files, executor
 assert executor["data"]["outbox"]["executor_report"], executor
 assert executor["data"]["outbox"]["executor_last_message"], executor
 assert "Commit SHA: " + executor["data"]["result"]["commit_sha"] in executor["data"]["outbox"]["executor_report"], executor
@@ -279,12 +383,19 @@ assert "Commit SHA: " + executor["data"]["result"]["commit_sha"] in executor["da
 assert "blocked" not in executor["data"]["outbox"]["executor_last_message"].lower(), executor
 assert "read-only git metadata" not in executor["data"]["outbox"]["executor_last_message"].lower(), executor
 assert reviewer["data"]["status"] == "completed", reviewer
+assert reviewer["data"]["instructions_revision"] == instructions_rev, reviewer
+assert set(reviewer["data"]["resolved_instruction_files"]) == reviewer_instruction_files, reviewer
 assert reviewer["data"]["outbox"]["reviewer_report"], reviewer
 assert reviewer["data"]["result"]["verdict"] == "approved", reviewer
 assert reviewer["data"]["result"]["summary"] == "reviewer approved the synthetic run", reviewer
 assert re.fullmatch(r"[0-9a-f]{40}", executor["data"]["result"]["commit_sha"]), executor
 assert reviewer["data"]["result"]["commit_sha"] == executor["data"]["result"]["commit_sha"], reviewer
 assert current_run["data"]["status"] == "completed", current_run
+assert current_run["data"]["instruction_profile"] == "default", current_run
+assert current_run["data"]["instruction_overlays"] == ["docs-only", "strict-review"], current_run
+assert current_run["data"]["instructions_repo_path"] == instructions_repo, current_run
+assert current_run["data"]["instructions_revision"] == instructions_rev, current_run
+assert set(current_run["data"]["resolved_instruction_files"]) == reviewer_instruction_files, current_run
 assert current_run["data"]["result"]["verdict"] == "approved", current_run
 assert current_run["data"]["result"]["commit_sha"] == executor["data"]["result"]["commit_sha"], current_run
 assert fail_code == "500", fail_code
