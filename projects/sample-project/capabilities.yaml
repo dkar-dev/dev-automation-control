@@ -1,0 +1,3 @@
+# capabilities.yaml is mandatory even when sections are empty.
+# TODO(OPEN_ISSUE): define canonical section names.
+sections: {}

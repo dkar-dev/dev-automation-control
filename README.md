@@ -2,6 +2,16 @@
 
 This repo is the control plane for orchestration between ChatGPT Web, n8n, Playwright bridge, and Codex executor/reviewer runs.
 
+## Legacy pipeline vs Control Plane v2 scaffold
+- The current executable pipeline in this repository is still the legacy single-task flow (`n8n`, `state/current.json`, bridge scripts, and outbox lifecycle below).
+- A separate Control Plane v2 scaffold now exists under:
+  - `docs/control-plane-v2/`
+  - `projects/`
+  - `schemas/`
+  - `examples/`
+- The v2 scaffold is contract/documentation/config-structure only in this step. Runtime implementation is intentionally not included.
+- Migration from legacy pipeline to v2 is not completed yet.
+
 ## Single-task v1 contract
 - One active task at a time
 - Inbox: `inbox/current-task.md`
