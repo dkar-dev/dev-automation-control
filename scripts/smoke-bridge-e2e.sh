@@ -113,6 +113,10 @@ if printf '%s' "$PROMPT" | grep -q 'You are the executor'; then
   ROLE="executor"
   printf '\nExecutor smoke handoff validated.\n' >> "$WORKTREE/README.md"
   printf '\nExecutor smoke handoff validated.\n' >> "$WORKTREE/docs/control-pipeline-smoke.md"
+  cat > "$LAST_MESSAGE" <<'MESSAGE'
+Executor finished, but local handoff commit creation was blocked.
+Git metadata appears read-only in this environment.
+MESSAGE
   cat > "$WORKTREE/.codex-run/executor-report.md" <<'REPORT'
 # Executor Report
 
@@ -265,10 +269,15 @@ assert current_run["ok"] is True
 assert prepare_fail["ok"] is True
 assert executor["data"]["status"] == "executor_done", executor
 assert executor["data"]["outbox"]["executor_report"], executor
+assert executor["data"]["outbox"]["executor_last_message"], executor
 assert "Commit SHA: " + executor["data"]["result"]["commit_sha"] in executor["data"]["outbox"]["executor_report"], executor
 assert "Status: created" in executor["data"]["outbox"]["executor_report"], executor
 assert "commit could not be created" not in executor["data"]["outbox"]["executor_report"].lower(), executor
 assert "read-only git metadata" not in executor["data"]["outbox"]["executor_report"].lower(), executor
+assert ".codex-run/executor-report.md" not in executor["data"]["outbox"]["executor_report"], executor
+assert "Commit SHA: " + executor["data"]["result"]["commit_sha"] in executor["data"]["outbox"]["executor_last_message"], executor
+assert "blocked" not in executor["data"]["outbox"]["executor_last_message"].lower(), executor
+assert "read-only git metadata" not in executor["data"]["outbox"]["executor_last_message"].lower(), executor
 assert reviewer["data"]["status"] == "completed", reviewer
 assert reviewer["data"]["outbox"]["reviewer_report"], reviewer
 assert reviewer["data"]["result"]["verdict"] == "approved", reviewer

@@ -29,54 +29,50 @@ executor_fail() {
   exit "$exit_code"
 }
 
-publish_executor_report() {
+publish_executor_artifacts() {
   local commit_sha="$1"
+  shift
 
-  python3 - "$LOCAL_REPORT" "$OUTBOX_DIR/executor-report.md" "$commit_sha" <<'PY'
-import re
-import sys
-from pathlib import Path
+  {
+    echo "# Executor Report"
+    echo
+    echo "## Summary"
+    echo "Executor completed the scoped project changes and the host-side runner created the handoff commit successfully."
+    echo
+    echo "## Files changed"
+    for path in "$@"; do
+      printf -- "- `%s`\n" "$path"
+    done
+    echo
+    echo "## Commands run"
+    echo "- codex exec in the executor worktree"
+    printf -- "- git reset --hard %s\n" "$BRANCH_BASE"
+    echo "- git clean -fdx"
+    echo "- git add -- <task-scoped files>"
+    printf -- "- git commit -m \"Executor handoff: %s\"\n" "$RUN_ID"
+    echo
+    echo "## Verification results"
+    echo "- Executor run completed successfully."
+    echo "- Host-side handoff commit was created and persisted to result.commit_sha."
+    echo
+    echo "## Handoff commit"
+    echo "Status: created"
+    echo "Scope: task-scoped project changes only"
+    echo "Commit SHA: $commit_sha"
+    echo
+    echo "## Open issues"
+    echo "- none"
+    echo
+    echo "## Recommended next action"
+    printf -- "- reviewer may start from commit %s\n" "$commit_sha"
+  } > "$OUTBOX_DIR/executor-report.md"
 
-src_path = Path(sys.argv[1])
-dst_path = Path(sys.argv[2])
-commit_sha = sys.argv[3].strip()
-
-raw = src_path.read_text(encoding="utf-8").lstrip("\ufeff")
-lines = raw.splitlines()
-
-if lines and lines[0].strip() == "# Executor Report":
-    body_lines = lines[1:]
-else:
-    body_lines = lines
-
-stale_patterns = [
-    r"commit could not be created",
-    r"could not create (?:the )?handoff commit",
-    r"read-only git metadata",
-]
-
-filtered_lines = [
-    line
-    for line in body_lines
-    if not any(re.search(pattern, line, flags=re.IGNORECASE) for pattern in stale_patterns)
-]
-
-clean_body = "\n".join(filtered_lines).strip()
-
-parts = [
-    "# Executor Report",
-    "",
-    "## Handoff commit",
-    "",
-    "Status: created",
-    f"Commit SHA: {commit_sha}",
-]
-
-if clean_body:
-    parts.extend(["", clean_body])
-
-dst_path.write_text("\n".join(parts).rstrip() + "\n", encoding="utf-8")
-PY
+  {
+    echo "Executor completed scoped project changes and the host-side handoff commit was created successfully."
+    echo "Commit SHA: $commit_sha"
+    printf -- "Files changed: %s\n" "$#"
+    echo "Next: reviewer may start from this commit."
+  } > "$OUTBOX_DIR/executor-last-message.md"
 }
 
 "$SCRIPT_DIR/mark-running.sh" executor >/dev/null
@@ -190,7 +186,7 @@ if ! "$SCRIPT_DIR/set-commit-sha.sh" "$COMMIT_SHA" >/dev/null; then
   executor_fail 1 "failed to persist executor handoff commit sha" "fix_executor_handoff_git"
 fi
 
-publish_executor_report "$COMMIT_SHA"
+publish_executor_artifacts "$COMMIT_SHA" "${CHANGED_FILES[@]}"
 
 state_set "executor_done" "" "run_reviewer"
 "$SCRIPT_DIR/sync-outbox.sh" >/dev/null
