@@ -11,6 +11,11 @@ This repo is the control plane for orchestration between ChatGPT Web, n8n, Playw
   - `examples/`
 - The v2 scaffold is contract/documentation/config-structure only in this step. Runtime implementation is intentionally not included.
 - Migration from legacy pipeline to v2 is not completed yet.
+- The first executable v2 utilities now live in:
+  - `scripts/validate-project-package`
+  - `scripts/init-sqlite-v1`
+  - `scripts/smoke-control-plane-v2.sh`
+- Operator/dev usage notes for those utilities are in [`docs/control-plane-v2/bootstrap-and-validation.md`](/home/dkar/workspace/control/docs/control-plane-v2/bootstrap-and-validation.md).
 
 ## Single-task v1 contract
 - One active task at a time
