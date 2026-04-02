@@ -38,6 +38,8 @@
 
 ## Future-ready direction (not implemented here)
 - Runtime v1 is expected to become SQLite-backed in a future step.
+- The accepted storage and queue contract for that direction is defined in `docs/control-plane-v2/storage-and-queue.md`.
+- The matching SQLite schema skeleton is defined in `schemas/sqlite-v1.sql`.
 - Machine validation for project packages is expected to be added incrementally.
 - Migration plan from legacy pipeline to v2 control plane is expected in a separate ADR/task.
 
