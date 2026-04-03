@@ -30,6 +30,8 @@
 - No frozen taxonomy yet for `origin_type` or full `step_key` values beyond the current executor/reviewer-oriented use case.
 
 ## Notes on the current schema skeleton
+- `projects` is a registry/import table for validated control-repo packages; it stores only `project_key`, `package_root`, and timestamps.
+- The project YAML package remains the primary source of truth outside SQLite; the registry row is linkage metadata only.
 - `runs`, `step_runs`, and `queue_items` hold current mutable active state.
 - `state_transitions`, `run_snapshots`, and `artifact_refs` are append-only records.
 - Flow linkage lives on `runs` via `flow_id`, `parent_run_id`, `origin_type`, `origin_run_id`, and `origin_step_run_id`.

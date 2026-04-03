@@ -28,6 +28,8 @@ from pathlib import Path
 control_dir = Path(sys.argv[1]).resolve()
 validate_script = control_dir / "scripts" / "validate-project-package"
 sqlite_script = control_dir / "scripts" / "init-sqlite-v1"
+register_script = control_dir / "scripts" / "register-project-package"
+list_script = control_dir / "scripts" / "list-registered-projects"
 sample_project = control_dir / "projects" / "sample-project"
 
 
@@ -115,6 +117,71 @@ with tempfile.TemporaryDirectory() as tmp_dir:
     }
     assert expected_tables.issubset(set(sqlite_payload["database"]["tables"])), sqlite_payload
 
+    register_proc = run_command(
+        register_script,
+        "sample-project",
+        "--projects-root",
+        control_dir / "projects",
+        "--sqlite-db",
+        db_path,
+        "--json",
+    )
+    register_payload = json.loads(register_proc.stdout)
+    assert register_payload["ok"] is True, register_payload
+    assert register_payload["registration"]["action"] == "inserted", register_payload
+    initial_project = register_payload["registration"]["project"]
+    assert initial_project["project_key"] == "sample-project", register_payload
+    assert initial_project["package_root"] == str(sample_project), register_payload
+
+    second_register_proc = run_command(
+        register_script,
+        "sample-project",
+        "--projects-root",
+        control_dir / "projects",
+        "--sqlite-db",
+        db_path,
+        "--json",
+    )
+    second_register_payload = json.loads(second_register_proc.stdout)
+    assert second_register_payload["registration"]["action"] == "updated", second_register_payload
+    second_project = second_register_payload["registration"]["project"]
+    assert second_project["id"] == initial_project["id"], second_register_payload
+
+    relocated_package = tmp_root / "sample-project"
+    shutil.copytree(sample_project, relocated_package)
+    relocated_register_proc = run_command(
+        register_script,
+        relocated_package,
+        "--sqlite-db",
+        db_path,
+        "--json",
+    )
+    relocated_register_payload = json.loads(relocated_register_proc.stdout)
+    relocated_project = relocated_register_payload["registration"]["project"]
+    assert relocated_project["id"] == initial_project["id"], relocated_register_payload
+    assert relocated_project["package_root"] == str(relocated_package), relocated_register_payload
+    assert relocated_project["created_at"] == initial_project["created_at"], relocated_register_payload
+
+    list_proc = run_command(list_script, "--sqlite-db", db_path, "--json")
+    list_payload = json.loads(list_proc.stdout)
+    assert list_payload["ok"] is True, list_payload
+    assert len(list_payload["projects"]) == 1, list_payload
+    listed_project = list_payload["projects"][0]
+    assert listed_project["project_key"] == "sample-project", list_payload
+    assert listed_project["package_root"] == str(relocated_package), list_payload
+
+    invalid_register_proc = run_command(
+        register_script,
+        missing_package,
+        "--sqlite-db",
+        db_path,
+        "--json",
+        expect_success=False,
+    )
+    invalid_register_payload = load_error_payload(invalid_register_proc)
+    assert invalid_register_payload["stage"] == "validation", invalid_register_payload
+    assert any(error["code"] == "FILE_MISSING" for error in invalid_register_payload["errors"]), invalid_register_payload
+
     with sqlite3.connect(db_path) as conn:
         actual_tables = {
             row[0]
@@ -135,6 +202,8 @@ with tempfile.TemporaryDirectory() as tmp_dir:
                     "MISSING_REQUIRED_KEY",
                     "WRONG_KEY_TYPE",
                 ],
+                "registered_project_id": initial_project["id"],
+                "registered_projects": [project["project_key"] for project in list_payload["projects"]],
                 "sqlite_tables": sorted(actual_tables),
             },
             ensure_ascii=False,

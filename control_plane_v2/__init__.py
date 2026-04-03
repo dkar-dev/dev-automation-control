@@ -1,4 +1,14 @@
 from .project_package import ProjectPackage, load_project_package, resolve_project_package_root
+from .project_registry import (
+    PROJECTS_TABLE_MISSING,
+    PROJECT_REGISTRY_CONFLICT,
+    PROJECT_REGISTRY_STORAGE_ERROR,
+    ProjectRegistryError,
+    RegisterProjectResult,
+    RegisteredProject,
+    list_registered_projects,
+    register_project_package,
+)
 from .project_package_validator import (
     CAPABILITIES_FILE,
     FILE_MISSING,
@@ -22,15 +32,23 @@ __all__ = [
     "MISSING_REQUIRED_KEY",
     "PACKAGE_DIRECTORY_MISSING",
     "PROJECT_FILE",
+    "PROJECTS_TABLE_MISSING",
+    "PROJECT_REGISTRY_CONFLICT",
+    "PROJECT_REGISTRY_STORAGE_ERROR",
     "ProjectPackage",
     "ProjectPackageValidationFailed",
+    "ProjectRegistryError",
+    "RegisterProjectResult",
     "REQUIRED_YAML_FILES",
+    "RegisteredProject",
     "SQLiteBootstrapResult",
     "ValidationError",
     "WRONG_KEY_TYPE",
     "WRONG_ROOT_TYPE",
     "initialize_sqlite_v1",
+    "list_registered_projects",
     "load_project_package",
+    "register_project_package",
     "resolve_project_package_root",
     "validate_project_package",
 ]
