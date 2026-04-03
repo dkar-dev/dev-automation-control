@@ -377,7 +377,8 @@ Filesystem stores:
 ### Current executable boundary
 - The current executable scaffold implements only root run insertion in `queued`.
 - It also inserts one linked `queue_item` in `queued` and append-only initial state transition rows.
-- Follow-up run creation, claims, and execution transitions are not implemented yet.
+- It can also start and finish `step_runs`, create retry `step_runs`, move a queued run to `running`, and move a queued queue item to `claimed`.
+- Follow-up run creation, queue selection, and real execution transitions are not implemented yet.
 
 ### Interpretation rule
 - `runs.status` models execution lifecycle only.
@@ -398,6 +399,11 @@ Filesystem stores:
 - `running -> failed` when the concrete launch fails.
 - `running -> timed_out` when wall-clock or runtime timeout handling terminates the launch.
 - `running -> cancelled` for explicit cancellation/manual stop paths once those APIs exist.
+
+### Current executable boundary
+- The current executable scaffold supports `executor` and `reviewer` step keys only.
+- Retry is implemented as a new `step_run` row with the same `run_id` and `step_key`, `attempt_no + 1`, and `previous_step_run_id`.
+- The current scaffold does not automatically finish a `run` when a `step_run` reaches a terminal state.
 
 ### Retry rule
 - Retry is never a state transition on the same `step_run`.

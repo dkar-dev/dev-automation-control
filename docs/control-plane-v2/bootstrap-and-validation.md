@@ -1,8 +1,8 @@
-# Control Plane v2 Bootstrap, Validation, Registry, and Root Run Utilities
+# Control Plane v2 Bootstrap, Validation, Registry, Run, and Step Utilities
 
 ## Scope
 - This step adds the first executable infrastructure layer for the v2 scaffold only.
-- It provides strict project package validation, SQLite schema bootstrap/init, project registry/import, and root run creation/inspection utilities.
+- It provides strict project package validation, SQLite schema bootstrap/init, project registry/import, root run creation/inspection, and step_run lifecycle utilities.
 - It does not implement scheduler behavior, worker/runtime execution, or follow-up automation.
 
 ## Project package validation
@@ -139,7 +139,63 @@ Root run behavior in this step:
 - a new `flow_id` is created for each root run
 - run scope is immutable at creation time: `project`, `project_profile`, `workflow_id`, `milestone`
 - provisional `origin_type` is currently fixed to `root_manual` for this path only
-- follow-up runs, scheduler claims, step runs, and runtime execution are not implemented
+- follow-up runs, scheduler claims, and runtime execution are not implemented
+
+## Step run lifecycle
+
+Start a step run:
+
+```bash
+cd /home/dkar/workspace/control
+./scripts/start-step-run \
+  --sqlite-db /tmp/control-plane-v2.sqlite \
+  --run-id <run-id> \
+  --step-key executor
+```
+
+Finish a running step run:
+
+```bash
+cd /home/dkar/workspace/control
+./scripts/finish-step-run \
+  --sqlite-db /tmp/control-plane-v2.sqlite \
+  <step-run-id> \
+  --status succeeded
+```
+
+Create a retry from a terminal step run:
+
+```bash
+cd /home/dkar/workspace/control
+./scripts/retry-step-run \
+  --sqlite-db /tmp/control-plane-v2.sqlite \
+  <step-run-id>
+```
+
+List step runs:
+
+```bash
+cd /home/dkar/workspace/control
+./scripts/list-step-runs --sqlite-db /tmp/control-plane-v2.sqlite --run-id <run-id>
+```
+
+Show one step run:
+
+```bash
+cd /home/dkar/workspace/control
+./scripts/show-step-run --sqlite-db /tmp/control-plane-v2.sqlite <step-run-id>
+```
+
+Step run behavior in this step:
+- allowed `step_key` values are currently limited to `executor` and `reviewer`
+- `start-step-run` creates a new `step_runs` row in `running`
+- the first started step on a queued run moves the run to `running`
+- the first started step on a queued queue item moves the queue item to `claimed`
+- `finish-step-run` moves only the target `step_run` to a terminal status
+- `retry-step-run` creates a new `step_run` row with `attempt_no + 1` and `previous_step_run_id`
+- retry is allowed only from a terminal predecessor
+- retry from a non-terminal predecessor fails closed
+- run finalization and queue completion are not implemented in this step
 
 ## Smoke checks
 
@@ -168,6 +224,11 @@ The smoke script verifies:
 - `runs`, `queue_items`, and initial `state_transitions` rows exist
 - `list-runs` returns the created run
 - `show-run` returns the detailed payload
+- `start-step-run` starts executor/reviewer step runs
+- `finish-step-run` persists terminal step statuses
+- `retry-step-run` builds a retry chain with `attempt_no + 1` and `previous_step_run_id`
+- invalid retry from a non-terminal step fails cleanly
+- `list-step-runs` and `show-step-run` return the expected chain
 
 ## Boundaries of this step
 - No scheduler.
@@ -176,8 +237,8 @@ The smoke script verifies:
 - No queue execution.
 - No project import of YAML/config payload into SQLite beyond registry metadata.
 - No follow-up run creation.
-- No step run creation.
 - No claim/worker execution.
+- No real Codex launch.
 - No legacy pipeline behavior changes.
 
 ## OPEN_ISSUE / TODO
@@ -186,5 +247,8 @@ The smoke script verifies:
 - TODO(OPEN_ISSUE): freeze canonical capabilities section taxonomy.
 - TODO(OPEN_ISSUE): freeze canonical opaque id format; current id generation wrapper uses UUIDv4 text behind abstraction.
 - TODO(OPEN_ISSUE): freeze root/manual `origin_type` taxonomy beyond the provisional `root_manual` value used in this step.
+- TODO(OPEN_ISSUE): freeze whether retry is allowed from every terminal step status or only from a subset.
+- TODO(OPEN_ISSUE): freeze step transition taxonomy beyond the provisional start/finish/retry labels used in this step.
 - TODO(OPEN_ISSUE): decide whether initial root run creation should also emit `run_snapshots` once snapshot policy is approved.
+- TODO(OPEN_ISSUE): decide when run/queue should move to terminal states after the last step completes.
 - TODO(OPEN_ISSUE): decide long-term home for v2 executable code if a larger Python package layout is introduced later.

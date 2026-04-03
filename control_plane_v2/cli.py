@@ -17,6 +17,17 @@ from .run_persistence import (
     get_run,
     list_runs,
 )
+from .step_run_persistence import (
+    STEP_KEYS,
+    STEP_RUN_TERMINAL_STATUSES,
+    STEP_RUN_STATUSES,
+    StepRunPersistenceError,
+    finish_step_run,
+    get_step_run,
+    list_step_runs,
+    retry_step_run,
+    start_step_run,
+)
 from .sqlite_bootstrap import initialize_sqlite_v1
 
 
@@ -361,6 +372,214 @@ def main_show_run(argv: list[str] | None = None) -> int:
     return 0
 
 
+def main_start_step_run(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(description="Start a new step_run for an existing run.")
+    parser.add_argument("--sqlite-db", required=True, help="SQLite database path bootstrapped with init-sqlite-v1")
+    parser.add_argument("--run-id", required=True, help="Run identifier")
+    parser.add_argument("--step-key", required=True, choices=STEP_KEYS, help="Step key to start")
+    parser.add_argument("--json", action="store_true", help="Print machine-readable JSON output")
+    args = parser.parse_args(argv)
+
+    try:
+        step_run_details = start_step_run(args.sqlite_db, args.run_id, args.step_key)
+    except StepRunPersistenceError as exc:
+        payload = {
+            "ok": False,
+            "stage": "step_run_persistence",
+            "error": exc.to_dict(),
+        }
+        if args.json:
+            print(json.dumps(payload, ensure_ascii=False, indent=2), file=sys.stderr)
+        else:
+            print(f"Failed to start step_run: {exc.message}", file=sys.stderr)
+            if exc.details:
+                print(f"Details: {exc.details}", file=sys.stderr)
+        return 1
+
+    payload = {
+        "ok": True,
+        "sqlite_db": str(Path(args.sqlite_db).expanduser().resolve()),
+        "step_run_details": step_run_details.to_dict(),
+    }
+    if args.json:
+        print(json.dumps(payload, ensure_ascii=False, indent=2))
+    else:
+        print(f"step_run started: {step_run_details.step_run.id}")
+        print(f"Run ID: {step_run_details.step_run.run_id}")
+        print(f"Step key: {step_run_details.step_run.step_key}")
+        print(f"Attempt: {step_run_details.step_run.attempt_no}")
+        print(f"Status: {step_run_details.step_run.status}")
+    return 0
+
+
+def main_finish_step_run(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(description="Finish a running step_run with a terminal status.")
+    parser.add_argument("--sqlite-db", required=True, help="SQLite database path bootstrapped with init-sqlite-v1")
+    parser.add_argument("step_run_id", help="step_run identifier")
+    parser.add_argument(
+        "--status",
+        required=True,
+        choices=STEP_RUN_TERMINAL_STATUSES,
+        help="Terminal status to persist",
+    )
+    parser.add_argument("--json", action="store_true", help="Print machine-readable JSON output")
+    args = parser.parse_args(argv)
+
+    try:
+        step_run_details = finish_step_run(args.sqlite_db, args.step_run_id, args.status)
+    except StepRunPersistenceError as exc:
+        payload = {
+            "ok": False,
+            "stage": "step_run_persistence",
+            "error": exc.to_dict(),
+        }
+        if args.json:
+            print(json.dumps(payload, ensure_ascii=False, indent=2), file=sys.stderr)
+        else:
+            print(f"Failed to finish step_run: {exc.message}", file=sys.stderr)
+            if exc.details:
+                print(f"Details: {exc.details}", file=sys.stderr)
+        return 1
+
+    payload = {
+        "ok": True,
+        "sqlite_db": str(Path(args.sqlite_db).expanduser().resolve()),
+        "step_run_details": step_run_details.to_dict(),
+    }
+    if args.json:
+        print(json.dumps(payload, ensure_ascii=False, indent=2))
+    else:
+        print(f"step_run finished: {step_run_details.step_run.id}")
+        print(f"Status: {step_run_details.step_run.status}")
+        print(f"Terminal at: {step_run_details.step_run.terminal_at}")
+    return 0
+
+
+def main_retry_step_run(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(description="Create a retry step_run from a terminal predecessor.")
+    parser.add_argument("--sqlite-db", required=True, help="SQLite database path bootstrapped with init-sqlite-v1")
+    parser.add_argument("step_run_id", help="Terminal predecessor step_run identifier")
+    parser.add_argument("--json", action="store_true", help="Print machine-readable JSON output")
+    args = parser.parse_args(argv)
+
+    try:
+        step_run_details = retry_step_run(args.sqlite_db, args.step_run_id)
+    except StepRunPersistenceError as exc:
+        payload = {
+            "ok": False,
+            "stage": "step_run_persistence",
+            "error": exc.to_dict(),
+        }
+        if args.json:
+            print(json.dumps(payload, ensure_ascii=False, indent=2), file=sys.stderr)
+        else:
+            print(f"Failed to retry step_run: {exc.message}", file=sys.stderr)
+            if exc.details:
+                print(f"Details: {exc.details}", file=sys.stderr)
+        return 1
+
+    payload = {
+        "ok": True,
+        "sqlite_db": str(Path(args.sqlite_db).expanduser().resolve()),
+        "step_run_details": step_run_details.to_dict(),
+    }
+    if args.json:
+        print(json.dumps(payload, ensure_ascii=False, indent=2))
+    else:
+        print(f"retry step_run created: {step_run_details.step_run.id}")
+        print(f"Previous step_run: {step_run_details.step_run.previous_step_run_id}")
+        print(f"Attempt: {step_run_details.step_run.attempt_no}")
+        print(f"Status: {step_run_details.step_run.status}")
+    return 0
+
+
+def main_list_step_runs(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(description="List persisted step_runs.")
+    parser.add_argument("--sqlite-db", required=True, help="SQLite database path bootstrapped with init-sqlite-v1")
+    parser.add_argument("--run-id", help="Filter by run id")
+    parser.add_argument("--step-key", choices=STEP_KEYS, help="Filter by step key")
+    parser.add_argument("--status", choices=STEP_RUN_STATUSES, help="Filter by step_run status")
+    parser.add_argument("--limit", type=int, default=100, help="Maximum number of rows to return")
+    parser.add_argument("--json", action="store_true", help="Print machine-readable JSON output")
+    args = parser.parse_args(argv)
+
+    try:
+        step_runs = list_step_runs(
+            args.sqlite_db,
+            run_id=args.run_id,
+            step_key=args.step_key,
+            status=args.status,
+            limit=args.limit,
+        )
+    except StepRunPersistenceError as exc:
+        payload = {
+            "ok": False,
+            "error": exc.to_dict(),
+        }
+        if args.json:
+            print(json.dumps(payload, ensure_ascii=False, indent=2), file=sys.stderr)
+        else:
+            print(f"Failed to list step_runs: {exc.message}", file=sys.stderr)
+            if exc.details:
+                print(f"Details: {exc.details}", file=sys.stderr)
+        return 1
+
+    payload = {
+        "ok": True,
+        "sqlite_db": str(Path(args.sqlite_db).expanduser().resolve()),
+        "step_runs": [step_run.to_dict() for step_run in step_runs],
+    }
+    if args.json:
+        print(json.dumps(payload, ensure_ascii=False, indent=2))
+    else:
+        print(f"step_runs: {len(step_runs)}")
+        for step_run in step_runs:
+            print(
+                f"- {step_run.id} | run={step_run.run_id} | {step_run.step_key} "
+                f"attempt={step_run.attempt_no} | status={step_run.status}"
+            )
+    return 0
+
+
+def main_show_step_run(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(description="Show one persisted step_run.")
+    parser.add_argument("--sqlite-db", required=True, help="SQLite database path bootstrapped with init-sqlite-v1")
+    parser.add_argument("step_run_id", help="step_run identifier")
+    parser.add_argument("--json", action="store_true", help="Print machine-readable JSON output")
+    args = parser.parse_args(argv)
+
+    try:
+        step_run_details = get_step_run(args.sqlite_db, args.step_run_id)
+    except StepRunPersistenceError as exc:
+        payload = {
+            "ok": False,
+            "error": exc.to_dict(),
+        }
+        if args.json:
+            print(json.dumps(payload, ensure_ascii=False, indent=2), file=sys.stderr)
+        else:
+            print(f"Failed to load step_run: {exc.message}", file=sys.stderr)
+            if exc.details:
+                print(f"Details: {exc.details}", file=sys.stderr)
+        return 1
+
+    payload = {
+        "ok": True,
+        "sqlite_db": str(Path(args.sqlite_db).expanduser().resolve()),
+        "step_run_details": step_run_details.to_dict(),
+    }
+    if args.json:
+        print(json.dumps(payload, ensure_ascii=False, indent=2))
+    else:
+        print(f"step_run: {step_run_details.step_run.id}")
+        print(f"Run ID: {step_run_details.step_run.run_id}")
+        print(f"Step key: {step_run_details.step_run.step_key}")
+        print(f"Attempt: {step_run_details.step_run.attempt_no}")
+        print(f"Status: {step_run_details.step_run.status}")
+        print(f"Transitions: {len(step_run_details.state_transitions)}")
+    return 0
+
+
 def _format_validation_error(error: object) -> str:
     error_dict = error.to_dict()
     location = error_dict["file_path"] or error_dict["package_root"]
@@ -394,6 +613,21 @@ def main() -> int:
     show_run_parser = subparsers.add_parser("show-run")
     show_run_parser.add_argument("args", nargs=argparse.REMAINDER)
 
+    start_step_parser = subparsers.add_parser("start-step-run")
+    start_step_parser.add_argument("args", nargs=argparse.REMAINDER)
+
+    finish_step_parser = subparsers.add_parser("finish-step-run")
+    finish_step_parser.add_argument("args", nargs=argparse.REMAINDER)
+
+    retry_step_parser = subparsers.add_parser("retry-step-run")
+    retry_step_parser.add_argument("args", nargs=argparse.REMAINDER)
+
+    list_step_parser = subparsers.add_parser("list-step-runs")
+    list_step_parser.add_argument("args", nargs=argparse.REMAINDER)
+
+    show_step_parser = subparsers.add_parser("show-step-run")
+    show_step_parser.add_argument("args", nargs=argparse.REMAINDER)
+
     args = parser.parse_args()
 
     if args.command == "validate-project-package":
@@ -410,6 +644,16 @@ def main() -> int:
         return main_list_runs(args.args)
     if args.command == "show-run":
         return main_show_run(args.args)
+    if args.command == "start-step-run":
+        return main_start_step_run(args.args)
+    if args.command == "finish-step-run":
+        return main_finish_step_run(args.args)
+    if args.command == "retry-step-run":
+        return main_retry_step_run(args.args)
+    if args.command == "list-step-runs":
+        return main_list_step_runs(args.args)
+    if args.command == "show-step-run":
+        return main_show_step_run(args.args)
 
     print(f"Unknown command: {args.command}", file=sys.stderr)
     return 1

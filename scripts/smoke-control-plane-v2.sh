@@ -31,8 +31,13 @@ sqlite_script = control_dir / "scripts" / "init-sqlite-v1"
 register_script = control_dir / "scripts" / "register-project-package"
 list_script = control_dir / "scripts" / "list-registered-projects"
 create_run_script = control_dir / "scripts" / "create-root-run"
+finish_step_script = control_dir / "scripts" / "finish-step-run"
 list_runs_script = control_dir / "scripts" / "list-runs"
+list_step_runs_script = control_dir / "scripts" / "list-step-runs"
+retry_step_script = control_dir / "scripts" / "retry-step-run"
 show_run_script = control_dir / "scripts" / "show-run"
+show_step_run_script = control_dir / "scripts" / "show-step-run"
+start_step_script = control_dir / "scripts" / "start-step-run"
 sample_project = control_dir / "projects" / "sample-project"
 
 
@@ -260,28 +265,169 @@ with tempfile.TemporaryDirectory() as tmp_dir:
     assert len(show_run_payload["run_details"]["state_transitions"]) == 2, show_run_payload
     assert show_run_payload["run_details"]["run_snapshots"] == [], show_run_payload
 
+    start_executor_proc = run_command(
+        start_step_script,
+        "--sqlite-db",
+        db_path,
+        "--run-id",
+        created_run["id"],
+        "--step-key",
+        "executor",
+        "--json",
+    )
+    start_executor_payload = json.loads(start_executor_proc.stdout)
+    executor_step = start_executor_payload["step_run_details"]["step_run"]
+    assert executor_step["step_key"] == "executor", start_executor_payload
+    assert executor_step["attempt_no"] == 1, start_executor_payload
+    assert executor_step["status"] == "running", start_executor_payload
+    assert start_executor_payload["step_run_details"]["run"]["status"] == "running", start_executor_payload
+    assert start_executor_payload["step_run_details"]["run"]["queue_item"]["status"] == "claimed", start_executor_payload
+
+    invalid_retry_proc = run_command(
+        retry_step_script,
+        "--sqlite-db",
+        db_path,
+        executor_step["id"],
+        "--json",
+        expect_success=False,
+    )
+    invalid_retry_payload = load_error_payload(invalid_retry_proc)
+    assert invalid_retry_payload["stage"] == "step_run_persistence", invalid_retry_payload
+    assert invalid_retry_payload["error"]["code"] == "STEP_RUN_NOT_TERMINAL", invalid_retry_payload
+
+    finish_executor_proc = run_command(
+        finish_step_script,
+        "--sqlite-db",
+        db_path,
+        executor_step["id"],
+        "--status",
+        "succeeded",
+        "--json",
+    )
+    finish_executor_payload = json.loads(finish_executor_proc.stdout)
+    assert finish_executor_payload["step_run_details"]["step_run"]["status"] == "succeeded", finish_executor_payload
+
+    start_reviewer_proc = run_command(
+        start_step_script,
+        "--sqlite-db",
+        db_path,
+        "--run-id",
+        created_run["id"],
+        "--step-key",
+        "reviewer",
+        "--json",
+    )
+    start_reviewer_payload = json.loads(start_reviewer_proc.stdout)
+    reviewer_step = start_reviewer_payload["step_run_details"]["step_run"]
+    assert reviewer_step["step_key"] == "reviewer", start_reviewer_payload
+    assert reviewer_step["attempt_no"] == 1, start_reviewer_payload
+    assert reviewer_step["status"] == "running", start_reviewer_payload
+
+    finish_reviewer_proc = run_command(
+        finish_step_script,
+        "--sqlite-db",
+        db_path,
+        reviewer_step["id"],
+        "--status",
+        "failed",
+        "--json",
+    )
+    finish_reviewer_payload = json.loads(finish_reviewer_proc.stdout)
+    assert finish_reviewer_payload["step_run_details"]["step_run"]["status"] == "failed", finish_reviewer_payload
+
+    retry_reviewer_proc = run_command(
+        retry_step_script,
+        "--sqlite-db",
+        db_path,
+        reviewer_step["id"],
+        "--json",
+    )
+    retry_reviewer_payload = json.loads(retry_reviewer_proc.stdout)
+    reviewer_retry_step = retry_reviewer_payload["step_run_details"]["step_run"]
+    assert reviewer_retry_step["step_key"] == "reviewer", retry_reviewer_payload
+    assert reviewer_retry_step["attempt_no"] == 2, retry_reviewer_payload
+    assert reviewer_retry_step["previous_step_run_id"] == reviewer_step["id"], retry_reviewer_payload
+    assert reviewer_retry_step["status"] == "running", retry_reviewer_payload
+
+    finish_retry_reviewer_proc = run_command(
+        finish_step_script,
+        "--sqlite-db",
+        db_path,
+        reviewer_retry_step["id"],
+        "--status",
+        "succeeded",
+        "--json",
+    )
+    finish_retry_reviewer_payload = json.loads(finish_retry_reviewer_proc.stdout)
+    assert finish_retry_reviewer_payload["step_run_details"]["step_run"]["status"] == "succeeded", finish_retry_reviewer_payload
+
+    list_step_runs_proc = run_command(
+        list_step_runs_script,
+        "--sqlite-db",
+        db_path,
+        "--run-id",
+        created_run["id"],
+        "--json",
+    )
+    list_step_runs_payload = json.loads(list_step_runs_proc.stdout)
+    assert list_step_runs_payload["ok"] is True, list_step_runs_payload
+    assert [step_run["id"] for step_run in list_step_runs_payload["step_runs"]] == [
+        executor_step["id"],
+        reviewer_step["id"],
+        reviewer_retry_step["id"],
+    ], list_step_runs_payload
+
+    show_step_run_proc = run_command(
+        show_step_run_script,
+        "--sqlite-db",
+        db_path,
+        reviewer_retry_step["id"],
+        "--json",
+    )
+    show_step_run_payload = json.loads(show_step_run_proc.stdout)
+    assert show_step_run_payload["ok"] is True, show_step_run_payload
+    assert show_step_run_payload["step_run_details"]["step_run"]["id"] == reviewer_retry_step["id"], show_step_run_payload
+    assert len(show_step_run_payload["step_run_details"]["state_transitions"]) == 2, show_step_run_payload
+
     with sqlite3.connect(db_path) as conn:
         run_row = conn.execute(
-            "SELECT id, status, origin_type, parent_run_id, origin_run_id, origin_step_run_id FROM runs WHERE id = ?",
+            "SELECT id, status, origin_type, parent_run_id, origin_run_id, origin_step_run_id, started_at FROM runs WHERE id = ?",
             (created_run["id"],),
         ).fetchone()
         assert run_row is not None, created_run
-        assert run_row[1] == "queued", run_row
+        assert run_row[1] == "running", run_row
         assert run_row[2] == "root_manual", run_row
         assert run_row[3] is None and run_row[4] is None and run_row[5] is None, run_row
+        assert run_row[6] is not None, run_row
 
         queue_row = conn.execute(
-            "SELECT id, run_id, priority_class, status FROM queue_items WHERE run_id = ?",
+            "SELECT id, run_id, priority_class, status, claimed_at FROM queue_items WHERE run_id = ?",
             (created_run["id"],),
         ).fetchone()
         assert queue_row is not None, created_run
-        assert queue_row[2] == "interactive" and queue_row[3] == "queued", queue_row
+        assert queue_row[2] == "interactive" and queue_row[3] == "claimed", queue_row
+        assert queue_row[4] is not None, queue_row
+
+        step_rows = conn.execute(
+            """
+            SELECT id, step_key, attempt_no, previous_step_run_id, status
+            FROM step_runs
+            WHERE run_id = ?
+            ORDER BY created_at, id
+            """,
+            (created_run["id"],),
+        ).fetchall()
+        assert [(row[1], row[2], row[3], row[4]) for row in step_rows] == [
+            ("executor", 1, None, "succeeded"),
+            ("reviewer", 1, None, "failed"),
+            ("reviewer", 2, reviewer_step["id"], "succeeded"),
+        ], step_rows
 
         transition_count = conn.execute(
-            "SELECT COUNT(*) FROM state_transitions WHERE run_id = ? OR queue_item_id = ?",
-            (created_run["id"], created_queue_item["id"]),
+            "SELECT COUNT(*) FROM state_transitions WHERE run_id = ? OR queue_item_id = ? OR step_run_id IN (?, ?, ?)",
+            (created_run["id"], created_queue_item["id"], executor_step["id"], reviewer_step["id"], reviewer_retry_step["id"]),
         ).fetchone()[0]
-        assert transition_count == 2, transition_count
+        assert transition_count == 10, transition_count
 
         actual_tables = {
             row[0]
@@ -306,7 +452,17 @@ with tempfile.TemporaryDirectory() as tmp_dir:
                 "registered_projects": [project["project_key"] for project in list_payload["projects"]],
                 "created_run_id": created_run["id"],
                 "created_flow_id": created_run["flow_id"],
-                "run_transition_count": len(show_run_payload["run_details"]["state_transitions"]),
+                "run_transition_count": transition_count,
+                "step_run_chain": [
+                    {
+                        "id": step_run["id"],
+                        "step_key": step_run["step_key"],
+                        "attempt_no": step_run["attempt_no"],
+                        "previous_step_run_id": step_run["previous_step_run_id"],
+                        "status": step_run["status"],
+                    }
+                    for step_run in list_step_runs_payload["step_runs"]
+                ],
                 "sqlite_tables": sorted(actual_tables),
             },
             ensure_ascii=False,
