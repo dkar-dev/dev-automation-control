@@ -11,6 +11,7 @@ This repo is the control plane for orchestration between ChatGPT Web, n8n, Playw
   - `examples/`
 - The v2 scaffold now includes storage/persistence utilities, scheduler claim primitives, a bounded manual dispatch adapter, and a bounded single-worker loop v1 for one Linux host process.
 - The v2 scaffold now also includes a lightweight SQLite migration path, so schema evolution no longer requires re-initializing the database for every accepted change.
+- The v2 scaffold now also includes a bounded runtime cleanup manager v1 for terminal-only retention of artifacts, runtime worktrees, and local runtime branches.
 - Migration from legacy pipeline to v2 is not completed yet.
 - The first executable v2 utilities now live in:
   - `scripts/validate-project-package`
@@ -45,11 +46,15 @@ This repo is the control plane for orchestration between ChatGPT Web, n8n, Playw
   - `scripts/force-stop-run`
   - `scripts/rerun-run-step`
   - `scripts/show-run-control-state`
+  - `scripts/list-cleanup-candidates`
+  - `scripts/run-cleanup-once`
+  - `scripts/show-cleanup-status`
   - `scripts/smoke-control-plane-v2.sh`
   - `scripts/smoke-control-plane-v2-sqlite-migrations.sh`
   - `scripts/smoke-control-plane-v2-dispatch.sh`
   - `scripts/smoke-control-plane-v2-worker.sh`
   - `scripts/smoke-control-plane-v2-manual-control.sh`
+  - `scripts/smoke-control-plane-v2-cleanup.sh`
 - Operator/dev usage notes for those utilities are in:
   - [`docs/control-plane-v2/bootstrap-and-validation.md`](/home/dkar/workspace/control/docs/control-plane-v2/bootstrap-and-validation.md)
   - [`docs/control-plane-v2/manual-dispatch.md`](/home/dkar/workspace/control/docs/control-plane-v2/manual-dispatch.md)
@@ -69,6 +74,7 @@ This repo is the control plane for orchestration between ChatGPT Web, n8n, Playw
 - After a v2 reviewer dispatch finishes, `scripts/ingest-reviewer-result` can extract the semantic verdict from stored reviewer artifacts and close the v2 outcome chain.
 - `scripts/run-worker-tick` and `scripts/run-worker-until-idle` now chain claim -> dispatch -> ingestion on a single host process, but they do not add daemonization or multi-worker fencing.
 - `scripts/pause-run`, `scripts/resume-run`, `scripts/force-stop-run`, and `scripts/rerun-run-step` provide the bounded v1 manual recovery layer over the same run/queue/step primitives.
+- `scripts/list-cleanup-candidates`, `scripts/run-cleanup-once`, and `scripts/show-cleanup-status` provide terminal-only TTL cleanup for runtime artifacts, worktrees, and local runtime branches, while preserving cleanup audit metadata in SQLite.
 - n8n should send symbolic instruction selectors only: `instruction_profile`, `instruction_overlays`, and `instructions_repo_path`.
 - The control layer resolves instruction files on the host, records the repo revision and exact files used, then builds the final executor/reviewer prompts locally.
 - `GET /current-run` now exposes `instruction_profile`, `instruction_overlays`, `instructions_repo_path`, `instructions_revision`, and `resolved_instruction_files`.

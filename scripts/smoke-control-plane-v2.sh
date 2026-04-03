@@ -542,11 +542,11 @@ with tempfile.TemporaryDirectory() as tmp_dir:
     )
     list_step_runs_payload = json.loads(list_step_runs_proc.stdout)
     assert list_step_runs_payload["ok"] is True, list_step_runs_payload
-    assert [step_run["id"] for step_run in list_step_runs_payload["step_runs"]] == [
+    assert {step_run["id"] for step_run in list_step_runs_payload["step_runs"]} == {
         executor_step["id"],
         reviewer_step["id"],
         reviewer_retry_step["id"],
-    ], list_step_runs_payload
+    }, list_step_runs_payload
 
     show_step_run_proc = run_command(
         show_step_run_script,

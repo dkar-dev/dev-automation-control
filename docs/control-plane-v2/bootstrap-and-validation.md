@@ -1,8 +1,8 @@
-# Control Plane v2 Bootstrap, Validation, SQLite Migrations, Registry, Run, Step, Dispatch, Worker, and Manual Control Utilities
+# Control Plane v2 Bootstrap, Validation, SQLite Migrations, Registry, Run, Step, Dispatch, Worker, Manual Control, and Cleanup Utilities
 
 ## Scope
 - This step adds the first executable infrastructure layer for the v2 scaffold only.
-- It provides strict project package validation, SQLite schema bootstrap/init, SQLite migration management, project registry/import, root run creation/inspection, step_run lifecycle utilities, reviewer outcome/follow-up persistence, provisional scheduler claim/release primitives, a bounded manual dispatch adapter for claimed runs, a bounded single-worker loop v1, and a bounded manual control/recovery layer v1.
+- It provides strict project package validation, SQLite schema bootstrap/init, SQLite migration management, project registry/import, root run creation/inspection, step_run lifecycle utilities, reviewer outcome/follow-up persistence, provisional scheduler claim/release primitives, a bounded manual dispatch adapter for claimed runs, a bounded single-worker loop v1, a bounded manual control/recovery layer v1, and a bounded runtime cleanup manager v1.
 - It still does not implement a daemon/service runtime, multi-worker protocol, or auto-continue policy engine.
 
 ## Project package validation
@@ -90,11 +90,13 @@ SQLite migration behavior in this step:
   - empty DB
   - legacy untracked v1 baseline schema
   - legacy untracked v2 schema that already includes manual-control `paused` state but lacks `schema_migrations`
+  - legacy untracked v3 schema that already includes cleanup audit columns/tables but lacks `schema_migrations`
 - invalid or partial migration history fails closed with an explicit error instead of silently guessing
 
 Current migration chain:
 - `0001_baseline.sql`: original pre-manual-control schema
 - `0002_manual_control_paused.sql`: upgrades run and queue status constraints for paused-state support
+- `0003_runtime_cleanup_audit.sql`: adds cleanup audit columns on `artifact_refs` plus `runtime_cleanup_records`
 
 What is not supported in this step:
 - downgrades
@@ -571,6 +573,70 @@ Manual control behavior in this step:
 - rerun does not reset the whole flow; it records a rerun intent and lets the worker/dispatch path consume it through the existing retry primitive
 - `show-run-control-state` exposes the latest manual transition, latest resume mode, and any pending rerun intent for recovery/debug use
 
+## Runtime cleanup manager v1
+
+List eligible cleanup candidates:
+
+```bash
+cd /home/dkar/workspace/control
+./scripts/list-cleanup-candidates \
+  --sqlite-db /tmp/control-plane-v2.sqlite \
+  --json
+```
+
+Run one dry-run cleanup pass:
+
+```bash
+cd /home/dkar/workspace/control
+./scripts/run-cleanup-once \
+  --sqlite-db /tmp/control-plane-v2.sqlite \
+  --dry-run \
+  --json
+```
+
+Run one real cleanup pass for worktrees only:
+
+```bash
+cd /home/dkar/workspace/control
+./scripts/run-cleanup-once \
+  --sqlite-db /tmp/control-plane-v2.sqlite \
+  --scope worktrees \
+  --json
+```
+
+Show persisted cleanup audit state:
+
+```bash
+cd /home/dkar/workspace/control
+./scripts/show-cleanup-status \
+  --sqlite-db /tmp/control-plane-v2.sqlite \
+  --run-id <run-id> \
+  --json
+```
+
+Cleanup behavior in this step:
+- cleanup is terminal-only: queued, claimed, running, and paused runs are never auto-cleaned
+- `force-stop` does not trigger immediate cleanup; stopped runs become eligible only after TTL expiry
+- artifacts, worktrees, and local runtime branches have separate TTL categories
+- TTL policy comes from `policy.yaml.cleanup_v1` when present:
+  - `artifacts_ttl_seconds`
+  - `worktree_ttl_seconds`
+  - `branch_ttl_seconds`
+- if `cleanup_v1` is missing, runtime defaults are used:
+  - artifacts: `86400`
+  - worktrees: `604800`
+  - branches: `604800`
+- artifact cleanup deletes the referenced filesystem path, but keeps the `artifact_refs` row and writes `cleaned_at`, `cleanup_status`, `cleanup_result_json`, and `last_cleanup_error`
+- worktree and branch cleanup keep append-only audit rows in `runtime_cleanup_records`
+- branch cleanup is limited to local runtime branches discovered from persisted dispatch context and will not delete `main`, `master`, or the persisted `branch_base`
+- cleanup errors are recorded per target and do not crash the whole pass
+
+What is not supported in this step:
+- remote branch deletion
+- cleanup of active or paused flows
+- distributed garbage collection
+- daemon/service scheduling for cleanup
+
 ## Smoke checks
 
 Run the isolated smoke coverage for validator and SQLite bootstrap:
@@ -675,9 +741,25 @@ The migration smoke verifies:
 - old DB at earlier schema -> migrate upgrades successfully without re-init
 - second migrate run is idempotent
 - migrated DB supports manual-control `paused` state
+- migrated DB also includes cleanup-audit schema version `0003`
 - migrated DB still passes a bounded worker executor -> reviewer -> approved path
 - invalid/partial migration metadata state fails explicitly
 - same-class scheduler ordering is stable and deterministic
+
+Run the focused cleanup smoke:
+
+```bash
+cd /home/dkar/workspace/control
+./scripts/smoke-control-plane-v2-cleanup.sh
+```
+
+The cleanup smoke verifies:
+- terminal run becomes an artifact/worktree/branch cleanup candidate after TTL expiry
+- paused run is skipped
+- dry-run does not delete files, worktrees, or branches
+- full cleanup deletes eligible artifacts, worktree paths, and local runtime branches
+- cleanup metadata remains queryable through `show-cleanup-status`
+- repeated cleanup pass is idempotent
 - claimed runs can be released back to `queued`
 - dispatch-failed requeues the claimed run and writes append-only transitions with reason metadata
 - one claimed queue item is not claimed twice while still claimed

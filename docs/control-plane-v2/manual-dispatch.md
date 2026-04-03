@@ -183,3 +183,8 @@ For bounded operator recovery/manual control on top of the same run/queue/step p
 - `./scripts/force-stop-run`
 - `./scripts/rerun-run-step`
 - `./scripts/show-run-control-state`
+
+For bounded runtime retention cleanup after runs become terminal, use:
+- `./scripts/list-cleanup-candidates`
+- `./scripts/run-cleanup-once`
+- `./scripts/show-cleanup-status`

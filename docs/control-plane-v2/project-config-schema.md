@@ -20,7 +20,7 @@
 |---|---|---|---|
 | `project.yaml` | Package-level metadata and contract version | `schema_version` | Not applicable |
 | `workflow.yaml` | Workflow contract placeholder | none yet | Yes |
-| `policy.yaml` | Policy contract placeholder | none yet | Yes |
+| `policy.yaml` | Policy contract placeholder plus optional cleanup retention policy | none yet | Yes |
 | `runtime.yaml` | Runtime contract placeholder | none yet | Yes |
 | `instructions.yaml` | Instruction contract placeholder | none yet | Yes |
 | `capabilities.yaml` | Capability declarations | `sections` (mapping) | Yes, `sections: {}` is valid |
@@ -31,9 +31,26 @@
 - Version format policy is not finalized yet (see `OPEN_ISSUE`).
 
 ## What can stay empty in this step
-- `workflow.yaml`, `policy.yaml`, `runtime.yaml`, and `instructions.yaml` may be empty mappings (`{}`).
+- `workflow.yaml`, `runtime.yaml`, and `instructions.yaml` may be empty mappings (`{}`).
+- `policy.yaml` may still be an empty mapping (`{}`), but it now also supports an optional `cleanup_v1` block.
 - `capabilities.yaml` may contain empty capability sections through `sections: {}`.
 - Empty files are not allowed; files must still be valid YAML documents.
+
+## Optional `policy.yaml.cleanup_v1`
+
+Current optional v1 retention block:
+
+```yaml
+cleanup_v1:
+  artifacts_ttl_seconds: 86400
+  worktree_ttl_seconds: 604800
+  branch_ttl_seconds: 604800
+```
+
+- All fields are optional.
+- If `cleanup_v1` is omitted, runtime defaults apply.
+- TTL values are currently expressed in seconds.
+- This block is consumed only by the bounded cleanup manager v1; it is not yet a broader policy engine contract.
 
 ## Hard validation errors (current)
 - Project package directory missing under `projects/`.
@@ -52,7 +69,7 @@
 ## OPEN_ISSUE / TODO
 - TODO(OPEN_ISSUE): Approve `schema_version` format and compatibility policy.
 - TODO(OPEN_ISSUE): Approve minimal mandatory keys for `workflow.yaml`.
-- TODO(OPEN_ISSUE): Approve minimal mandatory keys for `policy.yaml`.
+- TODO(OPEN_ISSUE): Decide whether `cleanup_v1` remains optional or becomes part of a broader required policy contract.
 - TODO(OPEN_ISSUE): Approve minimal mandatory keys for `runtime.yaml`.
 - TODO(OPEN_ISSUE): Approve minimal mandatory keys for `instructions.yaml`.
 - TODO(OPEN_ISSUE): Approve canonical capabilities sections list.

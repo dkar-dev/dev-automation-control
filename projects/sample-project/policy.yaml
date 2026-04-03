@@ -1,2 +1,6 @@
-# TODO(OPEN_ISSUE): define required policy keys.
-{}
+# Minimal v1 runtime retention policy. Projects may override these TTLs or omit
+# cleanup_v1 entirely to fall back to built-in defaults.
+cleanup_v1:
+  artifacts_ttl_seconds: 86400
+  worktree_ttl_seconds: 604800
+  branch_ttl_seconds: 604800

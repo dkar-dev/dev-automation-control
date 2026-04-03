@@ -237,9 +237,9 @@ context_path.write_text(json.dumps(context_payload, ensure_ascii=False, indent=2
 fresh_db = tmp_root / "fresh.sqlite"
 fresh_init = run_json(scripts["init"], fresh_db, "--json")
 fresh_show = run_json(scripts["show_version"], fresh_db, "--json")
-assert fresh_init["database"]["current_version"] == 2, fresh_init
+assert fresh_init["database"]["current_version"] == 3, fresh_init
 assert fresh_show["schema_version"]["tracked"] is True, fresh_show
-assert fresh_show["schema_version"]["current_version"] == 2, fresh_show
+assert fresh_show["schema_version"]["current_version"] == 3, fresh_show
 
 legacy_db = tmp_root / "legacy.sqlite"
 baseline_sql = (control_dir / "schemas" / "migrations" / "0001_baseline.sql").read_text(encoding="utf-8")
@@ -256,15 +256,15 @@ assert legacy_before["schema_version"]["current_version"] == 1, legacy_before
 
 legacy_migrate_1 = run_json(scripts["migrate"], legacy_db, "--json")
 assert legacy_migrate_1["migration"]["version_before"] == 1, legacy_migrate_1
-assert legacy_migrate_1["migration"]["version_after"] == 2, legacy_migrate_1
-assert [migration["version"] for migration in legacy_migrate_1["migration"]["executed_migrations"]] == [2], legacy_migrate_1
+assert legacy_migrate_1["migration"]["version_after"] == 3, legacy_migrate_1
+assert [migration["version"] for migration in legacy_migrate_1["migration"]["executed_migrations"]] == [2, 3], legacy_migrate_1
 
 legacy_migrate_2 = run_json(scripts["migrate"], legacy_db, "--json")
 assert legacy_migrate_2["migration"]["operation"] == "already_current", legacy_migrate_2
 
 legacy_after = run_json(scripts["show_version"], legacy_db, "--json")
 assert legacy_after["schema_version"]["tracked"] is True, legacy_after
-assert legacy_after["schema_version"]["current_version"] == 2, legacy_after
+assert legacy_after["schema_version"]["current_version"] == 3, legacy_after
 
 registration = run_json(
     scripts["register"],

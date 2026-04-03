@@ -72,6 +72,13 @@ from .worker_loop import (
     run_worker_tick,
     run_worker_until_idle,
 )
+from .runtime_cleanup_manager import (
+    CLEANUP_SCOPES,
+    CleanupManagerError,
+    list_cleanup_candidates,
+    run_cleanup_once,
+    show_cleanup_status,
+)
 
 
 CONTROL_DIR = Path(__file__).resolve().parents[1]
@@ -1184,6 +1191,175 @@ def main_run_worker_until_idle(argv: list[str] | None = None) -> int:
         print(f"Follow-ups created: {result.follow_ups_created}")
         print(f"Summary JSON: {result.summary_paths.json_path}")
     return 0 if result.ended_reason not in {"dispatch_failed", "ingestion_failed"} else 1
+
+
+def main_list_cleanup_candidates(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(description="List terminal Control Plane v2 cleanup candidates eligible by TTL.")
+    parser.add_argument("--sqlite-db", required=True, help="SQLite database path bootstrapped with init-sqlite-v1")
+    parser.add_argument(
+        "--scope",
+        action="append",
+        choices=CLEANUP_SCOPES,
+        help="Restrict to one cleanup scope; may be repeated",
+    )
+    parser.add_argument("--now", help="Optional ISO-8601 timestamp used for TTL eligibility evaluation")
+    parser.add_argument("--json", action="store_true", help="Print machine-readable JSON output")
+    args = parser.parse_args(argv)
+
+    try:
+        result = list_cleanup_candidates(
+            args.sqlite_db,
+            now=args.now,
+            scopes=args.scope,
+        )
+    except CleanupManagerError as exc:
+        payload = {
+            "ok": False,
+            "stage": "runtime_cleanup_manager",
+            "error": exc.to_dict(),
+        }
+        if args.json:
+            print(json.dumps(payload, ensure_ascii=False, indent=2), file=sys.stderr)
+        else:
+            print(f"Cleanup candidate listing failed: {exc.message}", file=sys.stderr)
+            if exc.details:
+                print(f"Details: {exc.details}", file=sys.stderr)
+        return 1
+
+    payload = {
+        "ok": True,
+        "sqlite_db": str(Path(args.sqlite_db).expanduser().resolve()),
+        "cleanup_candidates": result.to_dict(),
+    }
+    if args.json:
+        print(json.dumps(payload, ensure_ascii=False, indent=2))
+    else:
+        counts = payload["cleanup_candidates"]["counts"]
+        print(f"Cleanup candidates as of: {result.as_of}")
+        print(f"Scopes: {', '.join(result.scopes)}")
+        print(
+            "Counts: "
+            + ", ".join(f"{scope}={counts.get(scope, 0)}" for scope in CLEANUP_SCOPES)
+        )
+        for candidate in result.candidates:
+            location = candidate.filesystem_path or candidate.branch_name or candidate.target_identity
+            print(
+                f"- {candidate.scope} | target={candidate.target_identity} | "
+                f"expires_at={candidate.expires_at} | location={location}"
+            )
+    return 0
+
+
+def main_run_cleanup_once(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(description="Run one bounded Control Plane v2 cleanup pass.")
+    parser.add_argument("--sqlite-db", required=True, help="SQLite database path bootstrapped with init-sqlite-v1")
+    parser.add_argument(
+        "--scope",
+        action="append",
+        choices=CLEANUP_SCOPES,
+        help="Restrict to one cleanup scope; may be repeated",
+    )
+    parser.add_argument("--dry-run", action="store_true", help="List and simulate cleanup without deleting anything")
+    parser.add_argument("--now", help="Optional ISO-8601 timestamp used for TTL eligibility evaluation")
+    parser.add_argument("--json", action="store_true", help="Print machine-readable JSON output")
+    args = parser.parse_args(argv)
+
+    try:
+        result = run_cleanup_once(
+            args.sqlite_db,
+            dry_run=args.dry_run,
+            now=args.now,
+            scopes=args.scope,
+        )
+    except CleanupManagerError as exc:
+        payload = {
+            "ok": False,
+            "stage": "runtime_cleanup_manager",
+            "error": exc.to_dict(),
+        }
+        if args.json:
+            print(json.dumps(payload, ensure_ascii=False, indent=2), file=sys.stderr)
+        else:
+            print(f"Cleanup pass failed: {exc.message}", file=sys.stderr)
+            if exc.details:
+                print(f"Details: {exc.details}", file=sys.stderr)
+        return 1
+
+    payload = {
+        "ok": True,
+        "sqlite_db": str(Path(args.sqlite_db).expanduser().resolve()),
+        "cleanup_pass": result.to_dict(),
+    }
+    if args.json:
+        print(json.dumps(payload, ensure_ascii=False, indent=2))
+    else:
+        print(f"Cleanup pass as of: {result.as_of}")
+        print(f"Dry run: {result.dry_run}")
+        for scope in CLEANUP_SCOPES:
+            summary = payload["cleanup_pass"]["summary"][scope]
+            print(
+                f"- {scope}: processed={summary['processed']} deleted={summary['deleted']} "
+                f"errors={summary['errors']} missing={summary['missing']} dry_run={summary['dry_run']}"
+            )
+        if result.results:
+            print("Results:")
+            for item in result.results:
+                print(
+                    f"- {item.scope} | target={item.target_identity} | "
+                    f"status={item.status} | action={item.action}"
+                )
+    return 0 if all(item.status != "error" for item in result.results) else 1
+
+
+def main_show_cleanup_status(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(description="Show persisted Control Plane v2 cleanup audit state.")
+    parser.add_argument("--sqlite-db", required=True, help="SQLite database path bootstrapped with init-sqlite-v1")
+    parser.add_argument("--run-id", help="Optional run identifier filter")
+    parser.add_argument("--limit", type=int, default=200, help="Maximum number of audit entries to return")
+    parser.add_argument("--now", help="Optional ISO-8601 timestamp used for eligible candidate evaluation")
+    parser.add_argument("--json", action="store_true", help="Print machine-readable JSON output")
+    args = parser.parse_args(argv)
+
+    try:
+        result = show_cleanup_status(
+            args.sqlite_db,
+            run_id=args.run_id,
+            limit=args.limit,
+            now=args.now,
+        )
+    except CleanupManagerError as exc:
+        payload = {
+            "ok": False,
+            "stage": "runtime_cleanup_manager",
+            "error": exc.to_dict(),
+        }
+        if args.json:
+            print(json.dumps(payload, ensure_ascii=False, indent=2), file=sys.stderr)
+        else:
+            print(f"Cleanup status lookup failed: {exc.message}", file=sys.stderr)
+            if exc.details:
+                print(f"Details: {exc.details}", file=sys.stderr)
+        return 1
+
+    payload = {
+        "ok": True,
+        "sqlite_db": str(Path(args.sqlite_db).expanduser().resolve()),
+        "cleanup_status": result.to_dict(),
+    }
+    if args.json:
+        print(json.dumps(payload, ensure_ascii=False, indent=2))
+    else:
+        print(f"Cleanup status as of: {result.as_of}")
+        print(f"Run filter: {result.run_id or 'none'}")
+        print(f"Audit entries: {len(result.entries)}")
+        print(f"Eligible candidates: {len(result.eligible_candidates)}")
+        for entry in result.entries:
+            location = entry.filesystem_path or entry.branch_name or entry.target_identity
+            print(
+                f"- {entry.scope} | run={entry.run_id} | target={entry.target_identity} | "
+                f"status={entry.cleanup_status or 'pending'} | location={location}"
+            )
+    return 0
 
 
 def main_list_flow_runs(argv: list[str] | None = None) -> int:

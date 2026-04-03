@@ -211,6 +211,7 @@ import os
 from pathlib import Path
 import subprocess
 import sys
+from datetime import datetime, timedelta, timezone
 
 
 control_dir = Path(sys.argv[1]).resolve()
@@ -293,8 +294,13 @@ def create_run(milestone: str, *, priority_class: str = "interactive") -> str:
     return payload["run_details"]["run"]["id"]
 
 
-def worker_tick(*, env: dict[str, str] | None = None, expect_success: bool = True) -> dict:
-    payload = run_json(
+def worker_tick(
+    *,
+    env: dict[str, str] | None = None,
+    expect_success: bool = True,
+    claim_now: str | None = None,
+) -> dict:
+    args: list[object] = [
         scripts["tick"],
         "--sqlite-db",
         db_path,
@@ -304,7 +310,12 @@ def worker_tick(*, env: dict[str, str] | None = None, expect_success: bool = Tru
         artifact_root,
         "--worker-log-root",
         worker_log_root,
-        "--json",
+    ]
+    if claim_now is not None:
+        args.extend(["--claim-now", claim_now])
+    args.append("--json")
+    payload = run_json(
+        *args,
         expect_success=expect_success,
         env=env,
     )
@@ -337,6 +348,7 @@ context_payload = {
     "instructions_repo_path": str(tmp_root / "instructions"),
 }
 context_path.write_text(json.dumps(context_payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+future_claim_now = (datetime.now(timezone.utc) + timedelta(seconds=5)).isoformat(timespec="microseconds").replace("+00:00", "Z")
 
 run_command(scripts["init"], db_path, "--json")
 run_command(scripts["register"], tmp_root / "packages" / "demo", "--sqlite-db", db_path, "--json")
@@ -349,7 +361,7 @@ assert worker_tick()["status"] == "idle"
 resumed_result = run_json(scripts["resume"], "--sqlite-db", db_path, paused_run, "--json")["manual_control"]
 assert resumed_result["run"]["run"]["status"] == "queued", resumed_result
 assert resumed_result["control_state"]["latest_resume_mode"] == "normal", resumed_result
-resumed_tick = worker_tick(env={"SMOKE_REVIEWER_VERDICT_MODE": "approved"})
+resumed_tick = worker_tick(env={"SMOKE_REVIEWER_VERDICT_MODE": "approved"}, claim_now=future_claim_now)
 assert resumed_tick["claimed_run_id"] == paused_run, resumed_tick
 assert resumed_tick["final_run_status"] == "completed", resumed_tick
 
@@ -368,7 +380,7 @@ run_json(
 )
 stabilize_control = show_control(stabilize_run)
 assert stabilize_control["latest_resume_mode"] == "stabilize_to_green", stabilize_control
-stabilize_tick = worker_tick(env={"SMOKE_REVIEWER_VERDICT_MODE": "approved"})
+stabilize_tick = worker_tick(env={"SMOKE_REVIEWER_VERDICT_MODE": "approved"}, claim_now=future_claim_now)
 assert stabilize_tick["claimed_run_id"] == stabilize_run, stabilize_tick
 assert stabilize_tick["final_run_status"] == "completed", stabilize_tick
 

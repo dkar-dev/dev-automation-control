@@ -18,7 +18,7 @@ SQLITE_MIGRATION_STORAGE_ERROR = "SQLITE_MIGRATION_STORAGE_ERROR"
 SCHEMA_MIGRATIONS_TABLE = "schema_migrations"
 
 _MIGRATION_FILENAME_RE = re.compile(r"^(?P<version>\d{4})_(?P<name>[a-z0-9_]+)\.sql$")
-_MANAGED_TABLES = (
+_CORE_MANAGED_TABLES = (
     "projects",
     "runs",
     "step_runs",
@@ -202,6 +202,13 @@ def migrate_sqlite_v1(
             operation = "migrated_existing"
         elif before.detected_state == "legacy_untracked_v2":
             recorded_migrations.extend(_ensure_tracked_prefix(connection, resolved_db_path, migrations, up_to_version=2))
+            pending = [migration for migration in migrations if migration.version > 2]
+            executed_now, recorded_now = _apply_pending_migrations(connection, resolved_db_path, pending)
+            executed_migrations.extend(executed_now)
+            recorded_migrations.extend(recorded_now)
+            operation = "migrated_existing"
+        elif before.detected_state == "legacy_untracked_v3":
+            recorded_migrations.extend(_ensure_tracked_prefix(connection, resolved_db_path, migrations, up_to_version=3))
             operation = "adopted_existing"
         elif before.detected_state == "tracked":
             pending = [migration for migration in migrations if migration.version > before.current_version]
@@ -293,7 +300,7 @@ def _inspect_schema_version(
             user_tables,
             allow_tracked_table=True,
         )
-        if detected_layout_state not in {"legacy_untracked_v1", "legacy_untracked_v2"}:
+        if detected_layout_state not in {"legacy_untracked_v1", "legacy_untracked_v2", "legacy_untracked_v3"}:
             raise SQLiteMigrationError(
                 code=SQLITE_MIGRATION_INVALID_STATE,
                 message="Tracked SQLite database has an invalid managed schema layout",
@@ -503,9 +510,9 @@ def _detect_untracked_layout(
     if not tables:
         return "empty_untracked", 0
 
-    managed_present = {table for table in _MANAGED_TABLES if table in tables}
-    if managed_present and managed_present != set(_MANAGED_TABLES):
-        missing = sorted(set(_MANAGED_TABLES) - managed_present)
+    managed_present = {table for table in _CORE_MANAGED_TABLES if table in tables}
+    if managed_present and managed_present != set(_CORE_MANAGED_TABLES):
+        missing = sorted(set(_CORE_MANAGED_TABLES) - managed_present)
         raise SQLiteMigrationError(
             code=SQLITE_MIGRATION_INVALID_STATE,
             message="SQLite database contains a partial managed schema",
@@ -530,8 +537,25 @@ def _detect_untracked_layout(
             message="SQLite database has a partial paused-state schema drift",
             database_path=database_path,
             details=f"runs_has_paused={runs_has_paused} queue_items_has_paused={queue_has_paused}",
-        )
+    )
     if runs_has_paused and queue_has_paused:
+        artifact_ref_columns = set(_table_columns(connection, "artifact_refs"))
+        has_cleanup_columns = {
+            "cleaned_at",
+            "cleanup_status",
+            "cleanup_result_json",
+            "last_cleanup_error",
+        }.issubset(artifact_ref_columns)
+        has_runtime_cleanup_records = "runtime_cleanup_records" in tables
+        if has_cleanup_columns != has_runtime_cleanup_records:
+            raise SQLiteMigrationError(
+                code=SQLITE_MIGRATION_INVALID_STATE,
+                message="SQLite database has a partial cleanup-audit schema drift",
+                database_path=database_path,
+                details=f"artifact_cleanup_columns={has_cleanup_columns} runtime_cleanup_records={has_runtime_cleanup_records}",
+            )
+        if has_cleanup_columns and has_runtime_cleanup_records:
+            return "legacy_untracked_v3", 3
         return "legacy_untracked_v2", 2
     return "legacy_untracked_v1", 1
 
@@ -626,6 +650,11 @@ def _load_table_sql(connection: sqlite3.Connection, table_name: str, database_pa
             database_path=database_path,
         )
     return row["sql"]
+
+
+def _table_columns(connection: sqlite3.Connection, table_name: str) -> tuple[str, ...]:
+    rows = connection.execute(f"PRAGMA table_info({table_name})").fetchall()
+    return tuple(str(row["name"]) for row in rows)
 
 
 def _iter_sql_statements(sql_text: str, database_path: Path) -> tuple[str, ...]:
