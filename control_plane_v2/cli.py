@@ -28,6 +28,15 @@ from .reviewer_result_ingestion import (
     ingest_reviewer_result,
     inspect_reviewer_result,
 )
+from .manual_control import (
+    MANUAL_RESUME_MODES,
+    ManualControlError,
+    force_stop_run,
+    pause_run,
+    rerun_run_step,
+    resume_run,
+    show_run_control_state,
+)
 from .scheduler_persistence import (
     SchedulerPersistenceError,
     claim_next_run,
@@ -50,6 +59,12 @@ from .dispatch_adapter import (
     DISPATCH_PAYLOAD_INVALID,
     DispatchAdapterError,
     dispatch_claimed_run,
+)
+from .worker_loop import (
+    WorkerLoopError,
+    WorkerRuntimeConfig,
+    run_worker_tick,
+    run_worker_until_idle,
 )
 
 
@@ -751,6 +766,286 @@ def main_show_dispatch_result(argv: list[str] | None = None) -> int:
     return 0
 
 
+def main_pause_run(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(description="Pause a queued or claimed-but-not-started run in Control Plane v2.")
+    parser.add_argument("--sqlite-db", required=True, help="SQLite database path bootstrapped with init-sqlite-v1")
+    parser.add_argument("run_id", help="Run identifier")
+    parser.add_argument("--note", help="Optional operator note")
+    parser.add_argument("--operator", help="Optional operator identity")
+    parser.add_argument("--json", action="store_true", help="Print machine-readable JSON output")
+    args = parser.parse_args(argv)
+
+    try:
+        result = pause_run(args.sqlite_db, args.run_id, note=args.note, operator=args.operator)
+    except ManualControlError as exc:
+        payload = {"ok": False, "stage": "manual_control", "error": exc.to_dict()}
+        if args.json:
+            print(json.dumps(payload, ensure_ascii=False, indent=2), file=sys.stderr)
+        else:
+            print(f"Pause failed: {exc.message}", file=sys.stderr)
+            if exc.details:
+                print(f"Details: {exc.details}", file=sys.stderr)
+        return 1
+
+    payload = {
+        "ok": True,
+        "sqlite_db": str(Path(args.sqlite_db).expanduser().resolve()),
+        "manual_control": result.to_dict(),
+    }
+    if args.json:
+        print(json.dumps(payload, ensure_ascii=False, indent=2))
+    else:
+        print(f"Paused run: {result.run.run.id}")
+        print(f"Run status: {result.run.run.status}")
+        print(f"Queue status: {result.control_state.queue_status}")
+    return 0
+
+
+def main_resume_run(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(description="Resume a paused Control Plane v2 run.")
+    parser.add_argument("--sqlite-db", required=True, help="SQLite database path bootstrapped with init-sqlite-v1")
+    parser.add_argument("run_id", help="Run identifier")
+    parser.add_argument(
+        "--mode",
+        default="normal",
+        choices=MANUAL_RESUME_MODES,
+        help="Resume mode (default: normal)",
+    )
+    parser.add_argument("--note", help="Optional operator note")
+    parser.add_argument("--operator", help="Optional operator identity")
+    parser.add_argument("--json", action="store_true", help="Print machine-readable JSON output")
+    args = parser.parse_args(argv)
+
+    try:
+        result = resume_run(
+            args.sqlite_db,
+            args.run_id,
+            mode=args.mode,
+            note=args.note,
+            operator=args.operator,
+        )
+    except ManualControlError as exc:
+        payload = {"ok": False, "stage": "manual_control", "error": exc.to_dict()}
+        if args.json:
+            print(json.dumps(payload, ensure_ascii=False, indent=2), file=sys.stderr)
+        else:
+            print(f"Resume failed: {exc.message}", file=sys.stderr)
+            if exc.details:
+                print(f"Details: {exc.details}", file=sys.stderr)
+        return 1
+
+    payload = {
+        "ok": True,
+        "sqlite_db": str(Path(args.sqlite_db).expanduser().resolve()),
+        "manual_control": result.to_dict(),
+    }
+    if args.json:
+        print(json.dumps(payload, ensure_ascii=False, indent=2))
+    else:
+        print(f"Resumed run: {result.run.run.id}")
+        print(f"Resume mode: {result.control_state.latest_resume_mode or 'normal'}")
+        print(f"Queue status: {result.control_state.queue_status}")
+    return 0
+
+
+def main_force_stop_run(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(description="Force-stop a non-terminal Control Plane v2 run.")
+    parser.add_argument("--sqlite-db", required=True, help="SQLite database path bootstrapped with init-sqlite-v1")
+    parser.add_argument("run_id", help="Run identifier")
+    parser.add_argument("--note", help="Optional operator note")
+    parser.add_argument("--operator", help="Optional operator identity")
+    parser.add_argument("--json", action="store_true", help="Print machine-readable JSON output")
+    args = parser.parse_args(argv)
+
+    try:
+        result = force_stop_run(args.sqlite_db, args.run_id, note=args.note, operator=args.operator)
+    except ManualControlError as exc:
+        payload = {"ok": False, "stage": "manual_control", "error": exc.to_dict()}
+        if args.json:
+            print(json.dumps(payload, ensure_ascii=False, indent=2), file=sys.stderr)
+        else:
+            print(f"Force-stop failed: {exc.message}", file=sys.stderr)
+            if exc.details:
+                print(f"Details: {exc.details}", file=sys.stderr)
+        return 1
+
+    payload = {
+        "ok": True,
+        "sqlite_db": str(Path(args.sqlite_db).expanduser().resolve()),
+        "manual_control": result.to_dict(),
+    }
+    if args.json:
+        print(json.dumps(payload, ensure_ascii=False, indent=2))
+    else:
+        print(f"Force-stopped run: {result.run.run.id}")
+        print(f"Run status: {result.run.run.status}")
+        print(f"Queue status: {result.control_state.queue_status}")
+    return 0
+
+
+def main_rerun_run_step(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(description="Request a narrow rerun from one terminal executor/reviewer step path.")
+    parser.add_argument("--sqlite-db", required=True, help="SQLite database path bootstrapped with init-sqlite-v1")
+    parser.add_argument("step_run_id", help="Terminal step_run identifier")
+    parser.add_argument("--note", help="Optional operator note")
+    parser.add_argument("--operator", help="Optional operator identity")
+    parser.add_argument("--json", action="store_true", help="Print machine-readable JSON output")
+    args = parser.parse_args(argv)
+
+    try:
+        result = rerun_run_step(args.sqlite_db, args.step_run_id, note=args.note, operator=args.operator)
+    except ManualControlError as exc:
+        payload = {"ok": False, "stage": "manual_control", "error": exc.to_dict()}
+        if args.json:
+            print(json.dumps(payload, ensure_ascii=False, indent=2), file=sys.stderr)
+        else:
+            print(f"Rerun failed: {exc.message}", file=sys.stderr)
+            if exc.details:
+                print(f"Details: {exc.details}", file=sys.stderr)
+        return 1
+
+    payload = {
+        "ok": True,
+        "sqlite_db": str(Path(args.sqlite_db).expanduser().resolve()),
+        "manual_control": result.to_dict(),
+    }
+    if args.json:
+        print(json.dumps(payload, ensure_ascii=False, indent=2))
+    else:
+        print(f"Rerun requested for run: {result.run.run.id}")
+        print(f"Source step_run: {result.source_step_run.step_run.id if result.source_step_run is not None else 'none'}")
+        print(f"Pending rerun: {'yes' if result.control_state.pending_rerun is not None else 'no'}")
+    return 0
+
+
+def main_show_run_control_state(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(description="Show derived Control Plane v2 manual-control state for one run.")
+    parser.add_argument("--sqlite-db", required=True, help="SQLite database path bootstrapped with init-sqlite-v1")
+    parser.add_argument("run_id", help="Run identifier")
+    parser.add_argument("--json", action="store_true", help="Print machine-readable JSON output")
+    args = parser.parse_args(argv)
+
+    try:
+        control_state = show_run_control_state(args.sqlite_db, args.run_id)
+    except ManualControlError as exc:
+        payload = {"ok": False, "stage": "manual_control", "error": exc.to_dict()}
+        if args.json:
+            print(json.dumps(payload, ensure_ascii=False, indent=2), file=sys.stderr)
+        else:
+            print(f"Failed to load run control state: {exc.message}", file=sys.stderr)
+            if exc.details:
+                print(f"Details: {exc.details}", file=sys.stderr)
+        return 1
+
+    payload = {
+        "ok": True,
+        "sqlite_db": str(Path(args.sqlite_db).expanduser().resolve()),
+        "run_control_state": control_state.to_dict(),
+    }
+    if args.json:
+        print(json.dumps(payload, ensure_ascii=False, indent=2))
+    else:
+        print(f"Run: {control_state.run_id}")
+        print(f"Run status: {control_state.run_status}")
+        print(f"Queue status: {control_state.queue_status or 'none'}")
+        print(f"Scheduling eligible: {control_state.scheduling_eligible}")
+        print(f"Pending rerun: {'yes' if control_state.pending_rerun is not None else 'no'}")
+    return 0
+
+
+def main_run_worker_tick(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(description="Run one single-worker Control Plane v2 orchestration tick.")
+    parser.add_argument("--sqlite-db", required=True, help="SQLite database path bootstrapped with init-sqlite-v1")
+    _add_worker_runtime_arguments(parser)
+    parser.add_argument("--json", action="store_true", help="Print machine-readable JSON output")
+    args = parser.parse_args(argv)
+
+    try:
+        result = run_worker_tick(
+            args.sqlite_db,
+            runtime_config=_build_worker_runtime_config_from_args(args),
+        )
+    except WorkerLoopError as exc:
+        payload = {
+            "ok": False,
+            "stage": "worker_loop",
+            "error": exc.to_dict(),
+        }
+        if args.json:
+            print(json.dumps(payload, ensure_ascii=False, indent=2), file=sys.stderr)
+        else:
+            print(f"Worker tick failed: {exc.message}", file=sys.stderr)
+            if exc.details:
+                print(f"Details: {exc.details}", file=sys.stderr)
+        return 1
+
+    payload = {
+        "ok": True,
+        "sqlite_db": str(Path(args.sqlite_db).expanduser().resolve()),
+        "worker_tick": result.to_dict(),
+    }
+    if args.json:
+        print(json.dumps(payload, ensure_ascii=False, indent=2))
+    else:
+        print(f"Worker tick status: {result.status}")
+        print(f"Claimed run: {result.claimed_run_id or 'none'}")
+        print(f"Roles dispatched: {', '.join(result.roles_dispatched) if result.roles_dispatched else 'none'}")
+        print(f"Reviewer ingestion: {'yes' if result.reviewer_ingestion_happened else 'no'}")
+        print(f"Follow-up run: {result.follow_up_run_id or 'none'}")
+        print(f"Summary JSON: {result.summary_paths.json_path}")
+    return 0 if result.status in {"idle", "progressed", "stopped"} else 1
+
+
+def main_run_worker_until_idle(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(description="Run the single-worker Control Plane v2 loop until idle or a bound is hit.")
+    parser.add_argument("--sqlite-db", required=True, help="SQLite database path bootstrapped with init-sqlite-v1")
+    _add_worker_runtime_arguments(parser)
+    parser.add_argument("--max-ticks", type=int, default=100, help="Maximum ticks to execute (default: 100)")
+    parser.add_argument("--max-claims", type=int, help="Maximum claimed runs to process")
+    parser.add_argument("--max-flows", type=int, help="Maximum distinct flow_ids to process")
+    parser.add_argument("--max-wall-clock-seconds", type=float, help="Maximum wall-clock duration for this loop")
+    parser.add_argument("--json", action="store_true", help="Print machine-readable JSON output")
+    args = parser.parse_args(argv)
+
+    try:
+        result = run_worker_until_idle(
+            args.sqlite_db,
+            runtime_config=_build_worker_runtime_config_from_args(args),
+            max_ticks=args.max_ticks,
+            max_claims=args.max_claims,
+            max_flows=args.max_flows,
+            max_wall_clock_seconds=args.max_wall_clock_seconds,
+        )
+    except WorkerLoopError as exc:
+        payload = {
+            "ok": False,
+            "stage": "worker_loop",
+            "error": exc.to_dict(),
+        }
+        if args.json:
+            print(json.dumps(payload, ensure_ascii=False, indent=2), file=sys.stderr)
+        else:
+            print(f"Worker loop failed: {exc.message}", file=sys.stderr)
+            if exc.details:
+                print(f"Details: {exc.details}", file=sys.stderr)
+        return 1
+
+    payload = {
+        "ok": True,
+        "sqlite_db": str(Path(args.sqlite_db).expanduser().resolve()),
+        "worker_loop": result.to_dict(),
+    }
+    if args.json:
+        print(json.dumps(payload, ensure_ascii=False, indent=2))
+    else:
+        print(f"Worker loop ended: {result.ended_reason}")
+        print(f"Ticks executed: {result.ticks_executed}")
+        print(f"Claims processed: {result.claims_processed}")
+        print(f"Follow-ups created: {result.follow_ups_created}")
+        print(f"Summary JSON: {result.summary_paths.json_path}")
+    return 0 if result.ended_reason not in {"dispatch_failed", "ingestion_failed"} else 1
+
+
 def main_list_flow_runs(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="List all runs inside one flow_id chain.")
     parser.add_argument("--sqlite-db", required=True, help="SQLite database path bootstrapped with init-sqlite-v1")
@@ -1055,6 +1350,57 @@ def _main_dispatch_claimed_run(argv: list[str] | None, *, requested_role: str) -
     return 0 if result.technical_success else 1
 
 
+def _add_worker_runtime_arguments(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument("--context-json", help="Optional JSON file with legacy runtime context fields")
+    parser.add_argument("--artifact-root", help="Optional run artifact root (<project>/<flow>/<run>/ will be used)")
+    parser.add_argument("--worker-log-root", help="Optional worker summary/log root")
+    parser.add_argument("--workspace-root", help="Optional workspace root used to derive conventional project/worktree paths")
+    parser.add_argument("--project-repo-path", help="Override project_repo_path")
+    parser.add_argument("--executor-worktree-path", help="Override executor_worktree_path")
+    parser.add_argument("--reviewer-worktree-path", help="Override reviewer_worktree_path")
+    parser.add_argument("--instructions-repo-path", help="Override instructions_repo_path")
+    parser.add_argument("--branch-base", help="Override branch_base")
+    parser.add_argument("--instruction-profile", help="Override instruction_profile")
+    parser.add_argument("--instruction-overlay", action="append", dest="instruction_overlays", help="Append one instruction overlay")
+    parser.add_argument("--task-text", help="Override task_text")
+    parser.add_argument("--mode", choices=("executor-only", "executor+reviewer"), help="Override legacy runtime mode")
+    parser.add_argument("--source", help="Override legacy runtime source")
+    parser.add_argument("--thread-label", help="Override legacy runtime thread_label")
+    parser.add_argument("--constraint", action="append", dest="constraints", help="Append one task constraint")
+    parser.add_argument("--expected-output", action="append", dest="expected_output", help="Append one expected-output line")
+    parser.add_argument("--legacy-control-dir", help="Optional control repo root used to source legacy scripts/templates")
+    parser.add_argument("--executor-runner", help="Override executor backend runner path")
+    parser.add_argument("--reviewer-runner", help="Override reviewer backend runner path")
+    parser.add_argument("--claim-now", help="Optional ISO-8601 timestamp used for scheduler claim evaluation")
+
+
+def _build_worker_runtime_config_from_args(args: argparse.Namespace) -> WorkerRuntimeConfig:
+    runtime_context = _load_json_argument(args.context_json) if getattr(args, "context_json", None) else None
+    return WorkerRuntimeConfig(
+        runtime_context=runtime_context,
+        artifact_root=Path(args.artifact_root).expanduser().resolve() if getattr(args, "artifact_root", None) else None,
+        worker_log_root=Path(args.worker_log_root).expanduser().resolve() if getattr(args, "worker_log_root", None) else None,
+        workspace_root=Path(args.workspace_root).expanduser().resolve() if getattr(args, "workspace_root", None) else None,
+        project_repo_path=Path(args.project_repo_path).expanduser().resolve() if getattr(args, "project_repo_path", None) else None,
+        executor_worktree_path=Path(args.executor_worktree_path).expanduser().resolve() if getattr(args, "executor_worktree_path", None) else None,
+        reviewer_worktree_path=Path(args.reviewer_worktree_path).expanduser().resolve() if getattr(args, "reviewer_worktree_path", None) else None,
+        instructions_repo_path=Path(args.instructions_repo_path).expanduser().resolve() if getattr(args, "instructions_repo_path", None) else None,
+        branch_base=getattr(args, "branch_base", None),
+        instruction_profile=getattr(args, "instruction_profile", None),
+        instruction_overlays=tuple(args.instruction_overlays) if getattr(args, "instruction_overlays", None) else None,
+        task_text=getattr(args, "task_text", None),
+        mode=getattr(args, "mode", None),
+        source=getattr(args, "source", None),
+        thread_label=getattr(args, "thread_label", None),
+        constraints=tuple(args.constraints) if getattr(args, "constraints", None) else None,
+        expected_output=tuple(args.expected_output) if getattr(args, "expected_output", None) else None,
+        legacy_control_dir=Path(args.legacy_control_dir).expanduser().resolve() if getattr(args, "legacy_control_dir", None) else None,
+        executor_runner_path=Path(args.executor_runner).expanduser().resolve() if getattr(args, "executor_runner", None) else None,
+        reviewer_runner_path=Path(args.reviewer_runner).expanduser().resolve() if getattr(args, "reviewer_runner", None) else None,
+        claim_now=getattr(args, "claim_now", None),
+    )
+
+
 def _load_json_argument(path: str) -> dict[str, object]:
     source_path = Path(path if path != "-" else ".").expanduser().resolve()
     try:
@@ -1133,6 +1479,21 @@ def main() -> int:
     show_dispatch_result_parser = subparsers.add_parser("show-dispatch-result")
     show_dispatch_result_parser.add_argument("args", nargs=argparse.REMAINDER)
 
+    pause_run_parser = subparsers.add_parser("pause-run")
+    pause_run_parser.add_argument("args", nargs=argparse.REMAINDER)
+
+    resume_run_parser = subparsers.add_parser("resume-run")
+    resume_run_parser.add_argument("args", nargs=argparse.REMAINDER)
+
+    force_stop_run_parser = subparsers.add_parser("force-stop-run")
+    force_stop_run_parser.add_argument("args", nargs=argparse.REMAINDER)
+
+    rerun_run_step_parser = subparsers.add_parser("rerun-run-step")
+    rerun_run_step_parser.add_argument("args", nargs=argparse.REMAINDER)
+
+    show_run_control_state_parser = subparsers.add_parser("show-run-control-state")
+    show_run_control_state_parser.add_argument("args", nargs=argparse.REMAINDER)
+
     list_flow_parser = subparsers.add_parser("list-flow-runs")
     list_flow_parser.add_argument("args", nargs=argparse.REMAINDER)
 
@@ -1153,6 +1514,12 @@ def main() -> int:
 
     dispatch_next_parser = subparsers.add_parser("dispatch-next-for-claimed-run")
     dispatch_next_parser.add_argument("args", nargs=argparse.REMAINDER)
+
+    worker_tick_parser = subparsers.add_parser("run-worker-tick")
+    worker_tick_parser.add_argument("args", nargs=argparse.REMAINDER)
+
+    worker_until_idle_parser = subparsers.add_parser("run-worker-until-idle")
+    worker_until_idle_parser.add_argument("args", nargs=argparse.REMAINDER)
 
     args = parser.parse_args()
 
@@ -1186,6 +1553,16 @@ def main() -> int:
         return main_ingest_reviewer_result(args.args)
     if args.command == "show-dispatch-result":
         return main_show_dispatch_result(args.args)
+    if args.command == "pause-run":
+        return main_pause_run(args.args)
+    if args.command == "resume-run":
+        return main_resume_run(args.args)
+    if args.command == "force-stop-run":
+        return main_force_stop_run(args.args)
+    if args.command == "rerun-run-step":
+        return main_rerun_run_step(args.args)
+    if args.command == "show-run-control-state":
+        return main_show_run_control_state(args.args)
     if args.command == "list-flow-runs":
         return main_list_flow_runs(args.args)
     if args.command == "claim-next-run":
@@ -1200,6 +1577,10 @@ def main() -> int:
         return main_dispatch_reviewer_run(args.args)
     if args.command == "dispatch-next-for-claimed-run":
         return main_dispatch_next_for_claimed_run(args.args)
+    if args.command == "run-worker-tick":
+        return main_run_worker_tick(args.args)
+    if args.command == "run-worker-until-idle":
+        return main_run_worker_until_idle(args.args)
 
     print(f"Unknown command: {args.command}", file=sys.stderr)
     return 1

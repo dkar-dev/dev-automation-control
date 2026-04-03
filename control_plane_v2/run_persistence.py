@@ -16,8 +16,8 @@ from .id_generation import (
 
 
 PRIORITY_CLASSES = ("system", "interactive", "background")
-RUN_STATUSES = ("queued", "running", "completed", "failed", "stopped", "cancelled")
-QUEUE_ITEM_STATUSES = ("queued", "claimed", "completed", "cancelled")
+RUN_STATUSES = ("queued", "running", "paused", "completed", "failed", "stopped", "cancelled")
+QUEUE_ITEM_STATUSES = ("queued", "claimed", "paused", "completed", "cancelled")
 
 PROVISIONAL_ROOT_ORIGIN_TYPE = "root_manual"
 PROVISIONAL_RUN_CREATE_TRANSITION_TYPE = "root_run_created"

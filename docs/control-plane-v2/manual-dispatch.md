@@ -1,9 +1,10 @@
 # Control Plane v2 Manual Dispatch Adapter
 
 ## Scope
-- This is the first bounded v2 dispatch path for claimed runs.
+- This is the bounded v2 dispatch path for claimed runs.
 - It launches one `executor` or one `reviewer` action at a time.
-- It does not add a full scheduler loop, auto-continue policy, or in-command reviewer semantic completion.
+- Reviewer semantic completion remains explicit through the ingestion bridge.
+- The bounded single-worker loop and bounded manual control layer are separate utilities on top of this adapter; this document stays focused on dispatch behavior itself.
 
 ## Claim a run
 
@@ -164,10 +165,21 @@ Current role resolution is intentionally narrow:
 
 The adapter does not reimplement the Codex launch sequence. It prepares sandbox state/task files, invokes the legacy backend, and captures the resulting artifacts and step lifecycle.
 
-## Remaining gaps before a full worker loop
+## Remaining gaps beyond the bounded v1 worker
 
-- no endless scheduler/worker loop
+- no endless scheduler/worker loop daemon
 - no lease heartbeat or ownership token
-- no automatic worker loop that chains claim -> dispatch -> ingestion on its own
+- no multi-worker fencing or ownership protocol
 - no policy engine for auto-continue
 - no deploy/smoke matrix beyond the focused dispatch smoke
+
+For the bounded single-process loop that now composes these primitives, use:
+- `./scripts/run-worker-tick`
+- `./scripts/run-worker-until-idle`
+
+For bounded operator recovery/manual control on top of the same run/queue/step primitives, use:
+- `./scripts/pause-run`
+- `./scripts/resume-run`
+- `./scripts/force-stop-run`
+- `./scripts/rerun-run-step`
+- `./scripts/show-run-control-state`

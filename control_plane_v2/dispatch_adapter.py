@@ -13,9 +13,10 @@ import sqlite3
 import subprocess
 
 from .id_generation import generate_opaque_id
+from .manual_control import ManualControlError, PendingRerunIntent, get_pending_rerun_intent
 from .run_persistence import RunDetails, RunPersistenceError, _connect_run_db, _ensure_required_tables, _resolve_database_path
 from .scheduler_persistence import ClaimedRunMutationResult, DispatchRunPayload, SchedulerPersistenceError, mark_claimed_run_dispatch_failed
-from .step_run_persistence import STEP_RUN_ACTIVE_STATUS, STEP_RUN_TERMINAL_STATUSES, StepRunDetails, finish_step_run, list_step_runs, start_step_run
+from .step_run_persistence import STEP_RUN_ACTIVE_STATUS, STEP_RUN_TERMINAL_STATUSES, StepRunDetails, finish_step_run, list_step_runs, retry_step_run, start_step_run
 
 
 CONTROL_DIR = Path(__file__).resolve().parents[1]
@@ -45,6 +46,7 @@ INVALID_DISPATCH_ROLE = "INVALID_DISPATCH_ROLE"
 LEGACY_BACKEND_PRECHECK_FAILED = "LEGACY_BACKEND_PRECHECK_FAILED"
 REVIEWER_HANDOFF_MISSING = "REVIEWER_HANDOFF_MISSING"
 RUN_CONTEXT_INVALID = "RUN_CONTEXT_INVALID"
+MANUAL_CONTROL_LOOKUP_FAILED = "MANUAL_CONTROL_LOOKUP_FAILED"
 
 PROVISIONAL_RUN_REQUEUE_ROLLBACK_TRANSITION_TYPE = "dispatch_step_start_rolled_back"
 
@@ -278,29 +280,34 @@ def determine_dispatch_role(
             details=f"step_key={active_step.step_key}",
         )
 
-    reviewer_steps = [step for step in step_runs if step.step_key == "reviewer"]
-    if reviewer_steps:
-        reviewer_step = reviewer_steps[-1]
-        raise DispatchAdapterError(
-            code=DISPATCH_NOT_ALLOWED,
-            message=f"Reviewer dispatch is already recorded on this run: {reviewer_step.id}",
-            database_path=resolved_db_path,
-            details=f"reviewer_status={reviewer_step.status}",
-        )
-
-    executor_steps = [step for step in step_runs if step.step_key == "executor"]
-    if not step_runs:
-        resolved_role = "executor"
-        reason = "run_has_no_step_runs"
-    elif executor_steps and executor_steps[-1].status in STEP_RUN_TERMINAL_STATUSES:
-        resolved_role = "reviewer"
-        reason = "terminal_executor_present_without_reviewer"
+    pending_rerun = _load_pending_rerun_intent_or_raise(resolved_db_path, run_id)
+    if pending_rerun is not None:
+        resolved_role = pending_rerun.step_key
+        reason = f"manual_rerun_{pending_rerun.step_key}"
     else:
-        raise DispatchAdapterError(
-            code=DISPATCH_NOT_ALLOWED,
-            message=f"Run has no dispatchable next role: {run_id}",
-            database_path=resolved_db_path,
-        )
+        reviewer_steps = [step for step in step_runs if step.step_key == "reviewer"]
+        if reviewer_steps:
+            reviewer_step = reviewer_steps[-1]
+            raise DispatchAdapterError(
+                code=DISPATCH_NOT_ALLOWED,
+                message=f"Reviewer dispatch is already recorded on this run: {reviewer_step.id}",
+                database_path=resolved_db_path,
+                details=f"reviewer_status={reviewer_step.status}",
+            )
+
+        executor_steps = [step for step in step_runs if step.step_key == "executor"]
+        if not step_runs:
+            resolved_role = "executor"
+            reason = "run_has_no_step_runs"
+        elif executor_steps and executor_steps[-1].status in STEP_RUN_TERMINAL_STATUSES:
+            resolved_role = "reviewer"
+            reason = "terminal_executor_present_without_reviewer"
+        else:
+            raise DispatchAdapterError(
+                code=DISPATCH_NOT_ALLOWED,
+                message=f"Run has no dispatchable next role: {run_id}",
+                database_path=resolved_db_path,
+            )
 
     if normalized_requested_role != DISPATCH_ROLE_AUTODETECT and normalized_requested_role != resolved_role:
         raise DispatchAdapterError(
@@ -607,7 +614,13 @@ def dispatch_claimed_run(
         )
 
     pre_start_run_status = dispatch_run.run.status
-    started_step_run = start_step_run(resolved_db_path, dispatch_run.run.id, role_decision.resolved_role)
+    pending_rerun = _load_pending_rerun_intent_or_raise(resolved_db_path, dispatch_run.run.id)
+    started_step_run = _start_dispatch_step_run(
+        resolved_db_path,
+        run_id=dispatch_run.run.id,
+        role=role_decision.resolved_role,
+        pending_rerun=pending_rerun,
+    )
     attempt_paths = _prepare_attempt_paths(run_artifact_directory, role_decision.resolved_role, started_step_run.step_run.id)
     _write_json(
         attempt_paths.context_manifest_path,
@@ -751,6 +764,30 @@ def _normalize_requested_role(requested_role: str, database_path: Path) -> str:
             details=f"actual={requested_role}",
         )
     return normalized_role
+
+
+def _load_pending_rerun_intent_or_raise(database_path: Path, run_id: str) -> PendingRerunIntent | None:
+    try:
+        return get_pending_rerun_intent(database_path, run_id)
+    except ManualControlError as exc:
+        raise DispatchAdapterError(
+            code=MANUAL_CONTROL_LOOKUP_FAILED,
+            message=exc.message,
+            database_path=database_path,
+            details=exc.details,
+        ) from exc
+
+
+def _start_dispatch_step_run(
+    database_path: Path,
+    *,
+    run_id: str,
+    role: str,
+    pending_rerun: PendingRerunIntent | None,
+) -> StepRunDetails:
+    if pending_rerun is not None and pending_rerun.step_key == role:
+        return retry_step_run(database_path, pending_rerun.source_step_run_id)
+    return start_step_run(database_path, run_id, role)
 
 
 def _normalize_target_identifiers(

@@ -9,8 +9,7 @@ This repo is the control plane for orchestration between ChatGPT Web, n8n, Playw
   - `projects/`
   - `schemas/`
   - `examples/`
-- The v2 scaffold now includes storage/persistence utilities and scheduler claim primitives, but full runtime implementation is still intentionally not included.
-- The v2 scaffold now also includes a bounded manual dispatch adapter that can launch one claimed executor/reviewer action through the legacy host-side runtime without a full worker loop.
+- The v2 scaffold now includes storage/persistence utilities, scheduler claim primitives, a bounded manual dispatch adapter, and a bounded single-worker loop v1 for one Linux host process.
 - Migration from legacy pipeline to v2 is not completed yet.
 - The first executable v2 utilities now live in:
   - `scripts/validate-project-package`
@@ -35,8 +34,17 @@ This repo is the control plane for orchestration between ChatGPT Web, n8n, Playw
   - `scripts/dispatch-reviewer-run`
   - `scripts/dispatch-next-for-claimed-run`
   - `scripts/show-dispatch-result`
+  - `scripts/run-worker-tick`
+  - `scripts/run-worker-until-idle`
+  - `scripts/pause-run`
+  - `scripts/resume-run`
+  - `scripts/force-stop-run`
+  - `scripts/rerun-run-step`
+  - `scripts/show-run-control-state`
   - `scripts/smoke-control-plane-v2.sh`
   - `scripts/smoke-control-plane-v2-dispatch.sh`
+  - `scripts/smoke-control-plane-v2-worker.sh`
+  - `scripts/smoke-control-plane-v2-manual-control.sh`
 - Operator/dev usage notes for those utilities are in:
   - [`docs/control-plane-v2/bootstrap-and-validation.md`](/home/dkar/workspace/control/docs/control-plane-v2/bootstrap-and-validation.md)
   - [`docs/control-plane-v2/manual-dispatch.md`](/home/dkar/workspace/control/docs/control-plane-v2/manual-dispatch.md)
@@ -53,7 +61,9 @@ This repo is the control plane for orchestration between ChatGPT Web, n8n, Playw
 - n8n should call `http://host.docker.internal:8787` with `HTTP Request` nodes.
 - The bridge runs `control/scripts/run-executor.sh` and `control/scripts/run-reviewer.sh` on the host/WSL side, where Codex, worktrees, runtime, and project paths actually exist.
 - The v2 manual dispatch adapter reuses those same host-side scripts, but runs them inside an isolated per-dispatch sandbox and disables reviewer semantic auto-completion for the v2 reviewer path.
-- After a v2 reviewer dispatch finishes, `scripts/ingest-reviewer-result` can extract the semantic verdict from stored reviewer artifacts and close the v2 outcome chain without adding a full worker loop.
+- After a v2 reviewer dispatch finishes, `scripts/ingest-reviewer-result` can extract the semantic verdict from stored reviewer artifacts and close the v2 outcome chain.
+- `scripts/run-worker-tick` and `scripts/run-worker-until-idle` now chain claim -> dispatch -> ingestion on a single host process, but they do not add daemonization or multi-worker fencing.
+- `scripts/pause-run`, `scripts/resume-run`, `scripts/force-stop-run`, and `scripts/rerun-run-step` provide the bounded v1 manual recovery layer over the same run/queue/step primitives.
 - n8n should send symbolic instruction selectors only: `instruction_profile`, `instruction_overlays`, and `instructions_repo_path`.
 - The control layer resolves instruction files on the host, records the repo revision and exact files used, then builds the final executor/reviewer prompts locally.
 - `GET /current-run` now exposes `instruction_profile`, `instruction_overlays`, `instructions_repo_path`, `instructions_revision`, and `resolved_instruction_files`.
@@ -208,6 +218,50 @@ overlays/<name>/reviewer.md
   ./scripts/smoke-control-plane-v2-dispatch.sh
   ```
 - This smoke uses the real v2 dispatch adapter plus the real legacy executor/reviewer backend scripts, injects a fake `codex`, verifies executor/reviewer `step_run` lifecycle persistence, artifact refs/logs/manifests, approved/blocked/changes_requested ingestion outcomes, malformed reviewer verdict failure, manual override recovery, and the dispatch-failed requeue path for a broken backend launch.
+
+## Worker Loop Smoke Test
+- Run the focused v2 single-worker smoke:
+  ```bash
+  cd /home/dkar/workspace/control
+  ./scripts/smoke-control-plane-v2-worker.sh
+  ```
+- This smoke uses the same real v2 claim / dispatch / ingestion primitives plus the legacy executor/reviewer backend scripts, injects a fake `codex`, and verifies:
+  - one-tick executor -> reviewer -> approved -> completed
+  - `changes_requested` follow-up creation and next-tick pickup
+  - `blocked` terminal stop
+  - explicit `dispatch_failed` and `ingestion_failed` worker summaries
+  - bounded `run-worker-until-idle` behavior and worker summary artifacts
+
+## V2 Manual Control v1
+- `./scripts/show-run-control-state` shows the current run status, queue status, active step, pause/terminal flags, latest manual transition, latest resume mode, and any pending narrow rerun intent.
+- `./scripts/pause-run` is allowed only for:
+  - queued runs
+  - claimed runs with no active `step_run` yet
+- Paused runs are reflected in both `runs.status` and `queue_items.status` as `paused`, and the worker skips them because only `queue_items.status = queued` is claimable.
+- `./scripts/resume-run` supports:
+  - `--mode normal`: move the paused run back to `queued`
+  - `--mode stabilize_to_green`: move the paused run back to `queued` and persist explicit recovery intent metadata for later inspection/history
+- `./scripts/force-stop-run` moves the run to terminal `stopped` and the queue item to terminal `cancelled` for queued, claimed, or active runs. It does not perform cleanup side effects and does not attempt a true interrupt of an already running backend process.
+- `./scripts/rerun-run-step` is intentionally narrow. It appends rerun intent history for:
+  - failed/stopped executor paths before reviewer history exists
+  - failed/stopped reviewer paths when the run has not already been completed
+- The rerun path does not reset the whole flow. The next worker tick notices the pending rerun intent and uses the existing retry primitive for the matching `step_run`.
+- Pausing a run with an active `step_run` is explicitly rejected in v1 as not safe, because there is no backend interrupt/lease protocol yet.
+
+## Manual Control Smoke Test
+- Run the focused manual-control smoke:
+  ```bash
+  cd /home/dkar/workspace/control
+  ./scripts/smoke-control-plane-v2-manual-control.sh
+  ```
+- This smoke verifies:
+  - pause queued run -> worker skips it
+  - resume paused run -> worker picks it again
+  - `resume --mode stabilize_to_green` preserves recovery metadata
+  - force-stop queued run -> terminal stop with no cleanup side effects
+  - force-stop claimed-not-started run -> terminal stop with no cleanup side effects
+  - pause active step path -> explicit `not safe` failure
+  - narrow rerun of a failed executor step -> run becomes schedulable again through the existing retry path
 
 ## Instruction Smoke Test
 - Validate a concrete instructions repo shape directly:
