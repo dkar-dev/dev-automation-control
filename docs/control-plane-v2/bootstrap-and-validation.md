@@ -235,6 +235,54 @@ Cycle and guardrail behavior in this step:
 - provisional `max_wall_clock_time` is currently measured from the first run `created_at` in the flow to the reviewer outcome decision time
 - provisional `max_wall_clock_time` is currently fixed in code to `86400` seconds until policy/config semantics are frozen
 
+## Reviewer result ingestion bridge
+
+Ingest a terminal reviewer dispatch result into the existing reviewer outcome layer:
+
+```bash
+cd /home/dkar/workspace/control
+./scripts/ingest-reviewer-result \
+  --sqlite-db /tmp/control-plane-v2.sqlite \
+  --step-run-id <reviewer-step-run-id> \
+  --json
+```
+
+Or target the persisted dispatch result manifest directly:
+
+```bash
+cd /home/dkar/workspace/control
+./scripts/ingest-reviewer-result \
+  --sqlite-db /tmp/control-plane-v2.sqlite \
+  --dispatch-result-manifest /tmp/control-plane-v2-artifacts/<project>/<flow>/<run>/reviewer/<step-run-id>/dispatch-result.json \
+  --json
+```
+
+Optional inspection-only path:
+
+```bash
+cd /home/dkar/workspace/control
+./scripts/show-dispatch-result \
+  --sqlite-db /tmp/control-plane-v2.sqlite \
+  --step-run-id <reviewer-step-run-id> \
+  --json
+```
+
+Reviewer ingestion behavior in this step:
+- the bridge extracts semantic reviewer data from persisted artifacts, then calls the existing `complete-reviewer-outcome` persistence layer
+- it does not duplicate follow-up creation, guardrails, or terminal run/queue semantics
+- source-of-truth priority for verdict extraction is:
+  - `step_result_json`
+  - `dispatch_result_manifest.dispatch_outcome.state_result`
+  - `step_state_json.result`
+  - strict `reviewer-report.md` parsing as fallback
+- the reviewer report parser is strict:
+  - line 1 must be `Verdict: approved|changes_requested|blocked`
+  - line 2 must be `Summary: <non-empty summary>`
+  - line 3 may be empty or `Commit SHA: <sha|none>`
+- if no unambiguous verdict can be extracted, ingestion fails closed and leaves the flow unchanged
+- `--verdict` exists only for manual recovery/debug mode and overrides only the semantic verdict
+- when summary or `commit_sha` are available in readable artifacts, the ingestion result preserves their provenance and reuses them where possible
+
 ## Scheduler claim, release, and dispatch-failed primitives
 
 Claim the next runnable queued run:
@@ -325,7 +373,7 @@ Manual dispatch behavior in this step:
 - the run must already be claimed
 - role resolution is intentionally limited to `executor` and `reviewer`
 - the adapter reuses `run-executor.sh` and `run-reviewer.sh` as the backend runtime
-- reviewer dispatch explicitly disables legacy auto-completion so reviewer semantic outcome remains a separate `complete-reviewer-outcome` command
+- reviewer dispatch explicitly disables legacy auto-completion so reviewer semantic outcome remains a separate ingestion step
 - the adapter records minimal useful artifacts through `artifact_refs`: dispatch context/result manifests, resolved instruction manifests, stdout/stderr logs, prompt copy, and report file refs when present
 - a backend launch failure before execution requeues the claimed item through `mark-claimed-run-dispatch-failed`
 - a backend process that starts and then exits non-zero produces a terminal failed `step_run`; it is not treated as a dispatch-failed requeue
@@ -378,7 +426,11 @@ The dispatch smoke verifies:
 - terminal executor `step_run` persistence
 - reviewer dispatch through the v2 adapter and real legacy reviewer backend
 - artifact refs, logs, prompt copy, and manifests are persisted
-- reviewer semantic outcome remains separate and can create a follow-up run
+- reviewer ingestion can complete `approved`
+- reviewer ingestion can stop `blocked`
+- reviewer ingestion can create a `changes_requested` follow-up run
+- malformed reviewer verdict extraction fails explicitly without silently mutating the flow
+- manual override recovery can still close a malformed reviewer result
 - a broken backend launch requeues the queue item cleanly through the dispatch-failed path
 - `retry-step-run` builds a retry chain with `attempt_no + 1` and `previous_step_run_id`
 - invalid retry from a non-terminal step fails cleanly

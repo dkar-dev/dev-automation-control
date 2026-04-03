@@ -26,6 +26,7 @@ This repo is the control plane for orchestration between ChatGPT Web, n8n, Playw
   - `scripts/list-step-runs`
   - `scripts/show-step-run`
   - `scripts/complete-reviewer-outcome`
+  - `scripts/ingest-reviewer-result`
   - `scripts/list-flow-runs`
   - `scripts/claim-next-run`
   - `scripts/release-claimed-run`
@@ -33,6 +34,7 @@ This repo is the control plane for orchestration between ChatGPT Web, n8n, Playw
   - `scripts/dispatch-executor-run`
   - `scripts/dispatch-reviewer-run`
   - `scripts/dispatch-next-for-claimed-run`
+  - `scripts/show-dispatch-result`
   - `scripts/smoke-control-plane-v2.sh`
   - `scripts/smoke-control-plane-v2-dispatch.sh`
 - Operator/dev usage notes for those utilities are in:
@@ -51,6 +53,7 @@ This repo is the control plane for orchestration between ChatGPT Web, n8n, Playw
 - n8n should call `http://host.docker.internal:8787` with `HTTP Request` nodes.
 - The bridge runs `control/scripts/run-executor.sh` and `control/scripts/run-reviewer.sh` on the host/WSL side, where Codex, worktrees, runtime, and project paths actually exist.
 - The v2 manual dispatch adapter reuses those same host-side scripts, but runs them inside an isolated per-dispatch sandbox and disables reviewer semantic auto-completion for the v2 reviewer path.
+- After a v2 reviewer dispatch finishes, `scripts/ingest-reviewer-result` can extract the semantic verdict from stored reviewer artifacts and close the v2 outcome chain without adding a full worker loop.
 - n8n should send symbolic instruction selectors only: `instruction_profile`, `instruction_overlays`, and `instructions_repo_path`.
 - The control layer resolves instruction files on the host, records the repo revision and exact files used, then builds the final executor/reviewer prompts locally.
 - `GET /current-run` now exposes `instruction_profile`, `instruction_overlays`, `instructions_repo_path`, `instructions_revision`, and `resolved_instruction_files`.
@@ -121,7 +124,7 @@ overlays/<name>/reviewer.md
 - After a successful executor run, `run-executor.sh` stages project changes in the executor worktree, creates a handoff commit, and saves that commit to `result.commit_sha`.
 - Before reviewer Codex starts, `run-reviewer.sh` requires `result.commit_sha`, hard-resets the reviewer worktree to that commit, and cleans untracked files so review always starts from the executor snapshot.
 
-## Reviewer completion contract
+## Legacy Reviewer Completion Contract
 - Reviewer report must begin with these exact machine-readable lines:
   - `Verdict: approved|changes_requested|blocked`
   - `Summary: <one-line summary>`
@@ -129,6 +132,21 @@ overlays/<name>/reviewer.md
 - After copying `reviewer-report.md` into `control/outbox`, the host-side pipeline runs [`complete-run-from-review.sh`](/home/dkar/workspace/control/scripts/complete-run-from-review.sh).
 - `complete-run-from-review.sh` parses the reviewer report, optionally saves `Commit SHA`, and finalizes the run automatically.
 - External orchestration no longer needs a separate finalize step after a successful reviewer stage.
+
+## V2 Reviewer Ingestion Bridge
+- After a v2 reviewer dispatch completes, run `./scripts/ingest-reviewer-result` against the terminal reviewer `step_run` or the stored `dispatch_result_manifest`.
+- The bridge does not reimplement reviewer outcome semantics. It extracts verdict metadata, then delegates terminal state changes and follow-up creation to [`complete_reviewer_outcome`](/home/dkar/workspace/control/control_plane_v2/reviewer_outcome_persistence.py).
+- Verdict extraction source priority is:
+  - `step_result_json` artifact when present
+  - `dispatch_result_manifest.dispatch_outcome.state_result`
+  - `step_state_json.result`
+  - strict parsing of `step_report` / `reviewer-report.md`
+- The v2 report parser is strict:
+  - line 1 must be `Verdict: approved|changes_requested|blocked`
+  - line 2 must be `Summary: <non-empty summary>`
+  - line 3 may be empty or `Commit SHA: <sha|none>`
+- If no unambiguous verdict can be extracted, ingestion fails closed with an explicit error and does not mutate the flow.
+- `--verdict` is available only as a manual recovery/debug override. It forces the semantic verdict, but still preserves summary and `commit_sha` from the highest-priority readable artifacts when available.
 
 ## Bridge lifecycle
 - Normal control-side lifecycle is now:
@@ -189,7 +207,7 @@ overlays/<name>/reviewer.md
   cd /home/dkar/workspace/control
   ./scripts/smoke-control-plane-v2-dispatch.sh
   ```
-- This smoke uses the real v2 dispatch adapter plus the real legacy executor/reviewer backend scripts, injects a fake `codex`, verifies executor/reviewer `step_run` lifecycle persistence, artifact refs/logs/manifests, reviewer follow-up creation, and the dispatch-failed requeue path for a broken backend launch.
+- This smoke uses the real v2 dispatch adapter plus the real legacy executor/reviewer backend scripts, injects a fake `codex`, verifies executor/reviewer `step_run` lifecycle persistence, artifact refs/logs/manifests, approved/blocked/changes_requested ingestion outcomes, malformed reviewer verdict failure, manual override recovery, and the dispatch-failed requeue path for a broken backend launch.
 
 ## Instruction Smoke Test
 - Validate a concrete instructions repo shape directly:

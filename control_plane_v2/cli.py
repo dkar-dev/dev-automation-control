@@ -23,6 +23,11 @@ from .reviewer_outcome_persistence import (
     complete_reviewer_outcome,
     list_flow_runs,
 )
+from .reviewer_result_ingestion import (
+    ReviewerResultIngestionError,
+    ingest_reviewer_result,
+    inspect_reviewer_result,
+)
 from .scheduler_persistence import (
     SchedulerPersistenceError,
     claim_next_run,
@@ -640,6 +645,112 @@ def main_complete_reviewer_outcome(argv: list[str] | None = None) -> int:
     return 0
 
 
+def main_ingest_reviewer_result(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(
+        description="Extract reviewer semantic verdict from dispatch artifacts and complete the v2 reviewer outcome."
+    )
+    parser.add_argument("--sqlite-db", required=True, help="SQLite database path bootstrapped with init-sqlite-v1")
+    target_group = parser.add_mutually_exclusive_group(required=True)
+    target_group.add_argument("--step-run-id", help="Terminal reviewer step_run identifier")
+    target_group.add_argument("--dispatch-result-manifest", help="Dispatch result manifest JSON path")
+    parser.add_argument(
+        "--verdict",
+        choices=REVIEWER_VERDICTS,
+        help="Optional explicit override verdict for manual recovery or debug mode",
+    )
+    parser.add_argument("--json", action="store_true", help="Print machine-readable JSON output")
+    args = parser.parse_args(argv)
+
+    try:
+        result = ingest_reviewer_result(
+            args.sqlite_db,
+            reviewer_step_run_id=args.step_run_id,
+            dispatch_result_manifest_path=args.dispatch_result_manifest,
+            override_verdict=args.verdict,
+        )
+    except (ReviewerResultIngestionError, ReviewerOutcomeError) as exc:
+        payload = {
+            "ok": False,
+            "stage": "reviewer_result_ingestion",
+            "error": exc.to_dict(),
+        }
+        if args.json:
+            print(json.dumps(payload, ensure_ascii=False, indent=2), file=sys.stderr)
+        else:
+            print(f"Reviewer result ingestion failed: {exc.message}", file=sys.stderr)
+            if exc.details:
+                print(f"Details: {exc.details}", file=sys.stderr)
+        return 1
+
+    payload = {
+        "ok": True,
+        "sqlite_db": str(Path(args.sqlite_db).expanduser().resolve()),
+        "ingestion": result.to_dict(),
+    }
+    if args.json:
+        print(json.dumps(payload, ensure_ascii=False, indent=2))
+    else:
+        print(f"Reviewer result ingested: {result.reviewer_outcome.verdict}")
+        print(f"step_run: {result.inspection.reviewer_step_run_id}")
+        print(f"Outcome source: {result.inspection.selected_result.verdict_source_kind}")
+        print(f"Current run: {result.reviewer_outcome.current_run.run.id} ({result.reviewer_outcome.current_run.run.status})")
+        if result.reviewer_outcome.follow_up_run is not None:
+            print(f"Follow-up run: {result.reviewer_outcome.follow_up_run.run.id}")
+    return 0
+
+
+def main_show_dispatch_result(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(
+        description="Inspect reviewer dispatch result artifacts and show the extracted semantic reviewer verdict."
+    )
+    parser.add_argument("--sqlite-db", required=True, help="SQLite database path bootstrapped with init-sqlite-v1")
+    target_group = parser.add_mutually_exclusive_group(required=True)
+    target_group.add_argument("--step-run-id", help="Terminal reviewer step_run identifier")
+    target_group.add_argument("--dispatch-result-manifest", help="Dispatch result manifest JSON path")
+    parser.add_argument(
+        "--verdict",
+        choices=REVIEWER_VERDICTS,
+        help="Optional explicit override verdict to preview manual recovery mode",
+    )
+    parser.add_argument("--json", action="store_true", help="Print machine-readable JSON output")
+    args = parser.parse_args(argv)
+
+    try:
+        result = inspect_reviewer_result(
+            args.sqlite_db,
+            reviewer_step_run_id=args.step_run_id,
+            dispatch_result_manifest_path=args.dispatch_result_manifest,
+            override_verdict=args.verdict,
+        )
+    except ReviewerResultIngestionError as exc:
+        payload = {
+            "ok": False,
+            "stage": "reviewer_result_ingestion",
+            "error": exc.to_dict(),
+        }
+        if args.json:
+            print(json.dumps(payload, ensure_ascii=False, indent=2), file=sys.stderr)
+        else:
+            print(f"Failed to inspect reviewer dispatch result: {exc.message}", file=sys.stderr)
+            if exc.details:
+                print(f"Details: {exc.details}", file=sys.stderr)
+        return 1
+
+    payload = {
+        "ok": True,
+        "sqlite_db": str(Path(args.sqlite_db).expanduser().resolve()),
+        "inspection": result.to_dict(),
+    }
+    if args.json:
+        print(json.dumps(payload, ensure_ascii=False, indent=2))
+    else:
+        print(f"step_run: {result.reviewer_step_run_id}")
+        print(f"Selected verdict: {result.selected_result.verdict}")
+        print(f"Verdict source: {result.selected_result.verdict_source_kind}")
+        print(f"Warnings: {len(result.warnings)}")
+    return 0
+
+
 def main_list_flow_runs(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="List all runs inside one flow_id chain.")
     parser.add_argument("--sqlite-db", required=True, help="SQLite database path bootstrapped with init-sqlite-v1")
@@ -1016,6 +1127,12 @@ def main() -> int:
     complete_reviewer_parser = subparsers.add_parser("complete-reviewer-outcome")
     complete_reviewer_parser.add_argument("args", nargs=argparse.REMAINDER)
 
+    ingest_reviewer_parser = subparsers.add_parser("ingest-reviewer-result")
+    ingest_reviewer_parser.add_argument("args", nargs=argparse.REMAINDER)
+
+    show_dispatch_result_parser = subparsers.add_parser("show-dispatch-result")
+    show_dispatch_result_parser.add_argument("args", nargs=argparse.REMAINDER)
+
     list_flow_parser = subparsers.add_parser("list-flow-runs")
     list_flow_parser.add_argument("args", nargs=argparse.REMAINDER)
 
@@ -1065,6 +1182,10 @@ def main() -> int:
         return main_show_step_run(args.args)
     if args.command == "complete-reviewer-outcome":
         return main_complete_reviewer_outcome(args.args)
+    if args.command == "ingest-reviewer-result":
+        return main_ingest_reviewer_result(args.args)
+    if args.command == "show-dispatch-result":
+        return main_show_dispatch_result(args.args)
     if args.command == "list-flow-runs":
         return main_list_flow_runs(args.args)
     if args.command == "claim-next-run":

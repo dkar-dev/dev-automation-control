@@ -80,7 +80,62 @@ cd /home/dkar/workspace/control
 
 - Reviewer dispatch is still a separate bounded action.
 - The adapter disables legacy auto-completion while reusing the same backend launch path, so reviewer semantic outcome stays an explicit next step.
-- Finish reviewer semantics separately with `./scripts/complete-reviewer-outcome`.
+- Finish reviewer semantics separately with `./scripts/ingest-reviewer-result`.
+
+## Ingest reviewer result
+
+After reviewer dispatch reaches a terminal reviewer `step_run`, ingest the semantic outcome:
+
+```bash
+cd /home/dkar/workspace/control
+./scripts/ingest-reviewer-result \
+  --sqlite-db /tmp/control-plane-v2.sqlite \
+  --step-run-id <reviewer-step-run-id> \
+  --json
+```
+
+Or target the stored dispatch result manifest directly:
+
+```bash
+cd /home/dkar/workspace/control
+./scripts/ingest-reviewer-result \
+  --sqlite-db /tmp/control-plane-v2.sqlite \
+  --dispatch-result-manifest /tmp/control-plane-v2-artifacts/<project>/<flow>/<run>/reviewer/<step-run-id>/dispatch-result.json \
+  --json
+```
+
+The ingestion bridge:
+- extracts verdict metadata from persisted reviewer artifacts
+- calls the existing `complete_reviewer_outcome` persistence layer
+- does not duplicate follow-up creation, guardrails, or terminal run semantics
+
+Verdict extraction source priority is:
+- `step_result_json` artifact when present
+- `dispatch_result_manifest.dispatch_outcome.state_result`
+- `step_state_json.result`
+- strict parsing of the stored reviewer report as fallback
+
+The reviewer report parser is strict:
+- line 1 must be `Verdict: approved|changes_requested|blocked`
+- line 2 must be `Summary: <non-empty summary>`
+- line 3 may be empty or `Commit SHA: <sha|none>`
+
+If no unambiguous verdict can be extracted, ingestion fails closed and leaves the flow unchanged.
+
+For manual recovery or debug only, an explicit verdict override is available:
+
+```bash
+cd /home/dkar/workspace/control
+./scripts/ingest-reviewer-result \
+  --sqlite-db /tmp/control-plane-v2.sqlite \
+  --dispatch-result-manifest /tmp/control-plane-v2-artifacts/<project>/<flow>/<run>/reviewer/<step-run-id>/dispatch-result.json \
+  --verdict blocked \
+  --json
+```
+
+- `--verdict` overrides only the semantic verdict.
+- Summary and `commit_sha` still come from the highest-priority readable artifacts when they are available.
+- This is intended for manual recovery after malformed reviewer artifacts, not for the normal dispatch path.
 
 ## Auto-detect next role
 
@@ -113,6 +168,6 @@ The adapter does not reimplement the Codex launch sequence. It prepares sandbox 
 
 - no endless scheduler/worker loop
 - no lease heartbeat or ownership token
-- no automatic reviewer semantic completion inside dispatch
+- no automatic worker loop that chains claim -> dispatch -> ingestion on its own
 - no policy engine for auto-continue
 - no deploy/smoke matrix beyond the focused dispatch smoke
