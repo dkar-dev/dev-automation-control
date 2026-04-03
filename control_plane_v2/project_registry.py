@@ -4,8 +4,8 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 import sqlite3
-import uuid
 
+from .id_generation import generate_opaque_id
 from .project_package import ProjectPackage
 
 
@@ -82,7 +82,7 @@ def register_project_package(
               updated_at = excluded.updated_at
             """,
             (
-                existing.id if existing is not None else str(uuid.uuid4()),
+                existing.id if existing is not None else generate_opaque_id(),
                 project_package.project_key,
                 str(project_package.package_root),
                 existing.created_at if existing is not None else now,

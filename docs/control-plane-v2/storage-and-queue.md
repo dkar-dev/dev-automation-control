@@ -98,6 +98,7 @@ Notes:
 - Root runs keep `parent_run_id`, `origin_run_id`, and `origin_step_run_id` null while still carrying a non-null `origin_type`.
 - `project_profile` and `workflow_id` are immutable after run creation.
 - `milestone` is also treated as immutable run scope.
+- In the current executable scaffold step, the only implemented root-run `origin_type` is the provisional value `root_manual`.
 
 ### `step_runs`
 Represents one actual launch of a logical step inside a run.
@@ -372,6 +373,11 @@ Filesystem stores:
 - `running -> failed` when the run finishes unsuccessfully and no follow-up run is created.
 - `queued -> stopped` or `running -> stopped` when hard-stop or guardrail rules block further execution.
 - `queued -> cancelled` or `running -> cancelled` for explicit cancellation/manual stop paths once those APIs exist.
+
+### Current executable boundary
+- The current executable scaffold implements only root run insertion in `queued`.
+- It also inserts one linked `queue_item` in `queued` and append-only initial state transition rows.
+- Follow-up run creation, claims, and execution transitions are not implemented yet.
 
 ### Interpretation rule
 - `runs.status` models execution lifecycle only.

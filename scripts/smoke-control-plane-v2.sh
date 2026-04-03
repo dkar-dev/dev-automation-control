@@ -30,6 +30,9 @@ validate_script = control_dir / "scripts" / "validate-project-package"
 sqlite_script = control_dir / "scripts" / "init-sqlite-v1"
 register_script = control_dir / "scripts" / "register-project-package"
 list_script = control_dir / "scripts" / "list-registered-projects"
+create_run_script = control_dir / "scripts" / "create-root-run"
+list_runs_script = control_dir / "scripts" / "list-runs"
+show_run_script = control_dir / "scripts" / "show-run"
 sample_project = control_dir / "projects" / "sample-project"
 
 
@@ -182,7 +185,104 @@ with tempfile.TemporaryDirectory() as tmp_dir:
     assert invalid_register_payload["stage"] == "validation", invalid_register_payload
     assert any(error["code"] == "FILE_MISSING" for error in invalid_register_payload["errors"]), invalid_register_payload
 
+    unregistered_db_path = tmp_root / "unregistered.sqlite"
+    run_command(sqlite_script, unregistered_db_path, "--json")
+    unregistered_create_proc = run_command(
+        create_run_script,
+        "--sqlite-db",
+        unregistered_db_path,
+        "--project-key",
+        "sample-project",
+        "--project-profile",
+        "default",
+        "--workflow-id",
+        "build",
+        "--milestone",
+        "initial",
+        "--json",
+        expect_success=False,
+    )
+    unregistered_create_payload = load_error_payload(unregistered_create_proc)
+    assert unregistered_create_payload["stage"] == "run_persistence", unregistered_create_payload
+    assert unregistered_create_payload["error"]["code"] == "PROJECT_NOT_REGISTERED", unregistered_create_payload
+
+    artifact_root = tmp_root / "artifacts"
+    create_run_proc = run_command(
+        create_run_script,
+        "--sqlite-db",
+        db_path,
+        "--project-key",
+        "sample-project",
+        "--project-profile",
+        "default",
+        "--workflow-id",
+        "build",
+        "--milestone",
+        "initial",
+        "--artifact-root",
+        artifact_root,
+        "--json",
+    )
+    create_run_payload = json.loads(create_run_proc.stdout)
+    assert create_run_payload["ok"] is True, create_run_payload
+    run_details = create_run_payload["run_details"]
+    created_run = run_details["run"]
+    created_queue_item = created_run["queue_item"]
+    assert created_run["project_key"] == "sample-project", create_run_payload
+    assert created_run["status"] == "queued", create_run_payload
+    assert created_run["origin_type"] == "root_manual", create_run_payload
+    assert created_run["parent_run_id"] is None, create_run_payload
+    assert created_run["origin_run_id"] is None, create_run_payload
+    assert created_run["origin_step_run_id"] is None, create_run_payload
+    assert created_queue_item["priority_class"] == "interactive", create_run_payload
+    assert created_queue_item["status"] == "queued", create_run_payload
+    artifact_directory = Path(run_details["artifact_directory"])
+    assert artifact_directory == artifact_root / "sample-project" / created_run["flow_id"] / created_run["id"], create_run_payload
+    assert artifact_directory.is_dir(), create_run_payload
+
+    list_runs_proc = run_command(
+        list_runs_script,
+        "--sqlite-db",
+        db_path,
+        "--project-key",
+        "sample-project",
+        "--json",
+    )
+    list_runs_payload = json.loads(list_runs_proc.stdout)
+    assert list_runs_payload["ok"] is True, list_runs_payload
+    assert len(list_runs_payload["runs"]) == 1, list_runs_payload
+    assert list_runs_payload["runs"][0]["id"] == created_run["id"], list_runs_payload
+
+    show_run_proc = run_command(show_run_script, "--sqlite-db", db_path, created_run["id"], "--json")
+    show_run_payload = json.loads(show_run_proc.stdout)
+    assert show_run_payload["ok"] is True, show_run_payload
+    assert show_run_payload["run_details"]["run"]["id"] == created_run["id"], show_run_payload
+    assert len(show_run_payload["run_details"]["state_transitions"]) == 2, show_run_payload
+    assert show_run_payload["run_details"]["run_snapshots"] == [], show_run_payload
+
     with sqlite3.connect(db_path) as conn:
+        run_row = conn.execute(
+            "SELECT id, status, origin_type, parent_run_id, origin_run_id, origin_step_run_id FROM runs WHERE id = ?",
+            (created_run["id"],),
+        ).fetchone()
+        assert run_row is not None, created_run
+        assert run_row[1] == "queued", run_row
+        assert run_row[2] == "root_manual", run_row
+        assert run_row[3] is None and run_row[4] is None and run_row[5] is None, run_row
+
+        queue_row = conn.execute(
+            "SELECT id, run_id, priority_class, status FROM queue_items WHERE run_id = ?",
+            (created_run["id"],),
+        ).fetchone()
+        assert queue_row is not None, created_run
+        assert queue_row[2] == "interactive" and queue_row[3] == "queued", queue_row
+
+        transition_count = conn.execute(
+            "SELECT COUNT(*) FROM state_transitions WHERE run_id = ? OR queue_item_id = ?",
+            (created_run["id"], created_queue_item["id"]),
+        ).fetchone()[0]
+        assert transition_count == 2, transition_count
+
         actual_tables = {
             row[0]
             for row in conn.execute(
@@ -204,6 +304,9 @@ with tempfile.TemporaryDirectory() as tmp_dir:
                 ],
                 "registered_project_id": initial_project["id"],
                 "registered_projects": [project["project_key"] for project in list_payload["projects"]],
+                "created_run_id": created_run["id"],
+                "created_flow_id": created_run["flow_id"],
+                "run_transition_count": len(show_run_payload["run_details"]["state_transitions"]),
                 "sqlite_tables": sorted(actual_tables),
             },
             ensure_ascii=False,

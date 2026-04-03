@@ -1,9 +1,9 @@
-# Control Plane v2 Bootstrap, Validation, and Project Registry Utilities
+# Control Plane v2 Bootstrap, Validation, Registry, and Root Run Utilities
 
 ## Scope
 - This step adds the first executable infrastructure layer for the v2 scaffold only.
-- It provides strict project package validation, SQLite schema bootstrap/init, and project registry/import utilities.
-- It does not implement scheduler behavior, worker/runtime execution, or run creation.
+- It provides strict project package validation, SQLite schema bootstrap/init, project registry/import, and root run creation/inspection utilities.
+- It does not implement scheduler behavior, worker/runtime execution, or follow-up automation.
 
 ## Project package validation
 
@@ -88,6 +88,59 @@ Registry behavior in this step:
 - project YAML/config content remains sourced only from the control repo package under `projects/<project-key>/`
 - project config is not copied into SQLite
 
+## Root run creation and inspection
+
+Create a root run for an already registered project:
+
+```bash
+cd /home/dkar/workspace/control
+./scripts/create-root-run \
+  --sqlite-db /tmp/control-plane-v2.sqlite \
+  --project-key sample-project \
+  --project-profile default \
+  --workflow-id build \
+  --milestone initial
+```
+
+Create a root run and also build the run-level artifact directory skeleton:
+
+```bash
+cd /home/dkar/workspace/control
+./scripts/create-root-run \
+  --sqlite-db /tmp/control-plane-v2.sqlite \
+  --project-key sample-project \
+  --project-profile default \
+  --workflow-id build \
+  --milestone initial \
+  --artifact-root /tmp/control-plane-v2-artifacts \
+  --json
+```
+
+List runs:
+
+```bash
+cd /home/dkar/workspace/control
+./scripts/list-runs --sqlite-db /tmp/control-plane-v2.sqlite --project-key sample-project
+```
+
+Show one run:
+
+```bash
+cd /home/dkar/workspace/control
+./scripts/show-run --sqlite-db /tmp/control-plane-v2.sqlite <run-id>
+```
+
+Root run behavior in this step:
+- the project must already be registered in SQLite
+- only root run creation is implemented
+- one root run creates one `runs` row and one linked `queue_items` row
+- initial append-only transition history is written for the run and queue item
+- manual root creation defaults to `priority_class = interactive`
+- a new `flow_id` is created for each root run
+- run scope is immutable at creation time: `project`, `project_profile`, `workflow_id`, `milestone`
+- provisional `origin_type` is currently fixed to `root_manual` for this path only
+- follow-up runs, scheduler claims, step runs, and runtime execution are not implemented
+
 ## Smoke checks
 
 Run the isolated smoke coverage for validator and SQLite bootstrap:
@@ -110,6 +163,11 @@ The smoke script verifies:
 - `package_root` update on re-register
 - registry listing
 - clean register failure when package validation fails
+- clean root run create failure when project is not registered
+- successful root run creation for a registered project
+- `runs`, `queue_items`, and initial `state_transitions` rows exist
+- `list-runs` returns the created run
+- `show-run` returns the detailed payload
 
 ## Boundaries of this step
 - No scheduler.
@@ -117,12 +175,16 @@ The smoke script verifies:
 - No runtime execution.
 - No queue execution.
 - No project import of YAML/config payload into SQLite beyond registry metadata.
-- No runtime run creation.
+- No follow-up run creation.
+- No step run creation.
+- No claim/worker execution.
 - No legacy pipeline behavior changes.
 
 ## OPEN_ISSUE / TODO
 - TODO(OPEN_ISSUE): freeze canonical `schema_version` format/policy beyond string type.
 - TODO(OPEN_ISSUE): freeze mandatory semantic keys for non-`project.yaml` files.
 - TODO(OPEN_ISSUE): freeze canonical capabilities section taxonomy.
-- TODO(OPEN_ISSUE): freeze canonical project id format; current registry insert uses generated UUIDv4 text.
+- TODO(OPEN_ISSUE): freeze canonical opaque id format; current id generation wrapper uses UUIDv4 text behind abstraction.
+- TODO(OPEN_ISSUE): freeze root/manual `origin_type` taxonomy beyond the provisional `root_manual` value used in this step.
+- TODO(OPEN_ISSUE): decide whether initial root run creation should also emit `run_snapshots` once snapshot policy is approved.
 - TODO(OPEN_ISSUE): decide long-term home for v2 executable code if a larger Python package layout is introduced later.

@@ -16,6 +16,9 @@ This repo is the control plane for orchestration between ChatGPT Web, n8n, Playw
   - `scripts/init-sqlite-v1`
   - `scripts/register-project-package`
   - `scripts/list-registered-projects`
+  - `scripts/create-root-run`
+  - `scripts/list-runs`
+  - `scripts/show-run`
   - `scripts/smoke-control-plane-v2.sh`
 - Operator/dev usage notes for those utilities are in [`docs/control-plane-v2/bootstrap-and-validation.md`](/home/dkar/workspace/control/docs/control-plane-v2/bootstrap-and-validation.md).
 
