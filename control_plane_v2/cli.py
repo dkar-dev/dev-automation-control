@@ -41,6 +41,11 @@ from .step_run_persistence import (
     start_step_run,
 )
 from .sqlite_bootstrap import initialize_sqlite_v1
+from .dispatch_adapter import (
+    DISPATCH_PAYLOAD_INVALID,
+    DispatchAdapterError,
+    dispatch_claimed_run,
+)
 
 
 CONTROL_DIR = Path(__file__).resolve().parents[1]
@@ -836,6 +841,130 @@ def main_mark_claimed_run_dispatch_failed(argv: list[str] | None = None) -> int:
     return 0
 
 
+def main_dispatch_executor_run(argv: list[str] | None = None) -> int:
+    return _main_dispatch_claimed_run(argv, requested_role="executor")
+
+
+def main_dispatch_reviewer_run(argv: list[str] | None = None) -> int:
+    return _main_dispatch_claimed_run(argv, requested_role="reviewer")
+
+
+def main_dispatch_next_for_claimed_run(argv: list[str] | None = None) -> int:
+    return _main_dispatch_claimed_run(argv, requested_role="auto")
+
+
+def _main_dispatch_claimed_run(argv: list[str] | None, *, requested_role: str) -> int:
+    parser = argparse.ArgumentParser(description="Dispatch a claimed run through the v2 legacy-runtime adapter.")
+    parser.add_argument("--sqlite-db", required=True, help="SQLite database path bootstrapped with init-sqlite-v1")
+    target_group = parser.add_mutually_exclusive_group(required=True)
+    target_group.add_argument("--run-id", help="Claimed run identifier to dispatch")
+    target_group.add_argument("--queue-item-id", help="Claimed queue item identifier to dispatch")
+    target_group.add_argument("--claim-json", help="JSON file produced by claim-next-run or an equivalent envelope")
+    parser.add_argument("--context-json", help="Optional JSON file with legacy runtime context fields")
+    parser.add_argument("--artifact-root", help="Optional run artifact root (<project>/<flow>/<run>/ will be used)")
+    parser.add_argument("--workspace-root", help="Optional workspace root used to derive conventional project/worktree paths")
+    parser.add_argument("--project-repo-path", help="Override project_repo_path")
+    parser.add_argument("--executor-worktree-path", help="Override executor_worktree_path")
+    parser.add_argument("--reviewer-worktree-path", help="Override reviewer_worktree_path")
+    parser.add_argument("--instructions-repo-path", help="Override instructions_repo_path")
+    parser.add_argument("--branch-base", help="Override branch_base")
+    parser.add_argument("--instruction-profile", help="Override instruction_profile")
+    parser.add_argument("--instruction-overlay", action="append", dest="instruction_overlays", help="Append one instruction overlay")
+    parser.add_argument("--task-text", help="Override task_text")
+    parser.add_argument("--mode", choices=("executor-only", "executor+reviewer"), help="Override legacy runtime mode")
+    parser.add_argument("--source", help="Override legacy runtime source")
+    parser.add_argument("--thread-label", help="Override legacy runtime thread_label")
+    parser.add_argument("--constraint", action="append", dest="constraints", help="Append one task constraint")
+    parser.add_argument("--expected-output", action="append", dest="expected_output", help="Append one expected-output line")
+    parser.add_argument("--legacy-control-dir", help="Optional control repo root used to source legacy scripts/templates")
+    parser.add_argument("--executor-runner", help="Override executor backend runner path")
+    parser.add_argument("--reviewer-runner", help="Override reviewer backend runner path")
+    parser.add_argument("--json", action="store_true", help="Print machine-readable JSON output")
+    args = parser.parse_args(argv)
+
+    try:
+        claim_payload = _load_json_argument(args.claim_json) if args.claim_json else None
+        runtime_context = _load_json_argument(args.context_json) if args.context_json else None
+        result = dispatch_claimed_run(
+            args.sqlite_db,
+            requested_role=requested_role,
+            claim_payload=claim_payload,
+            runtime_context=runtime_context,
+            run_id=args.run_id,
+            queue_item_id=args.queue_item_id,
+            artifact_root=args.artifact_root,
+            workspace_root=args.workspace_root,
+            project_repo_path=args.project_repo_path,
+            executor_worktree_path=args.executor_worktree_path,
+            reviewer_worktree_path=args.reviewer_worktree_path,
+            instructions_repo_path=args.instructions_repo_path,
+            branch_base=args.branch_base,
+            instruction_profile=args.instruction_profile,
+            instruction_overlays=args.instruction_overlays,
+            task_text=args.task_text,
+            mode=args.mode,
+            source=args.source,
+            thread_label=args.thread_label,
+            constraints=args.constraints,
+            expected_output=args.expected_output,
+            legacy_control_dir=args.legacy_control_dir,
+            executor_runner_path=args.executor_runner,
+            reviewer_runner_path=args.reviewer_runner,
+        )
+    except (DispatchAdapterError, StepRunPersistenceError, SchedulerPersistenceError) as exc:
+        payload = {
+            "ok": False,
+            "stage": "dispatch_adapter",
+            "error": exc.to_dict(),
+        }
+        if args.json:
+            print(json.dumps(payload, ensure_ascii=False, indent=2), file=sys.stderr)
+        else:
+            print(f"Dispatch failed: {exc.message}", file=sys.stderr)
+            if exc.details:
+                print(f"Details: {exc.details}", file=sys.stderr)
+        return 1
+
+    payload = {
+        "ok": True,
+        "sqlite_db": str(Path(args.sqlite_db).expanduser().resolve()),
+        "dispatch": result.to_dict(),
+    }
+    if args.json:
+        print(json.dumps(payload, ensure_ascii=False, indent=2))
+    else:
+        print(f"Dispatched run: {result.dispatch_run.run.id}")
+        print(f"Role: {result.role_decision.resolved_role}")
+        print(f"Technical success: {result.technical_success}")
+        if result.step_run is not None:
+            print(f"step_run: {result.step_run.step_run.id} ({result.step_run.step_run.status})")
+        if result.queue_requeue is not None:
+            print(f"Queue item requeued: {result.queue_requeue.dispatch_run.queue_item.id}")
+        print(f"Artifacts: {len(result.artifacts)}")
+    return 0 if result.technical_success else 1
+
+
+def _load_json_argument(path: str) -> dict[str, object]:
+    source_path = Path(path if path != "-" else ".").expanduser().resolve()
+    try:
+        raw = sys.stdin.read() if path == "-" else source_path.read_text(encoding="utf-8")
+        payload = json.loads(raw)
+    except (OSError, json.JSONDecodeError) as exc:
+        raise DispatchAdapterError(
+            code=DISPATCH_PAYLOAD_INVALID,
+            message=f"Failed to load JSON payload: {path}",
+            database_path=source_path,
+            details=str(exc),
+        ) from exc
+    if not isinstance(payload, dict):
+        raise DispatchAdapterError(
+            code=DISPATCH_PAYLOAD_INVALID,
+            message="JSON payload must be an object",
+            database_path=source_path,
+        )
+    return payload
+
+
 def _format_validation_error(error: object) -> str:
     error_dict = error.to_dict()
     location = error_dict["file_path"] or error_dict["package_root"]
@@ -899,6 +1028,15 @@ def main() -> int:
     mark_dispatch_failed_parser = subparsers.add_parser("mark-claimed-run-dispatch-failed")
     mark_dispatch_failed_parser.add_argument("args", nargs=argparse.REMAINDER)
 
+    dispatch_executor_parser = subparsers.add_parser("dispatch-executor-run")
+    dispatch_executor_parser.add_argument("args", nargs=argparse.REMAINDER)
+
+    dispatch_reviewer_parser = subparsers.add_parser("dispatch-reviewer-run")
+    dispatch_reviewer_parser.add_argument("args", nargs=argparse.REMAINDER)
+
+    dispatch_next_parser = subparsers.add_parser("dispatch-next-for-claimed-run")
+    dispatch_next_parser.add_argument("args", nargs=argparse.REMAINDER)
+
     args = parser.parse_args()
 
     if args.command == "validate-project-package":
@@ -935,6 +1073,12 @@ def main() -> int:
         return main_release_claimed_run(args.args)
     if args.command == "mark-claimed-run-dispatch-failed":
         return main_mark_claimed_run_dispatch_failed(args.args)
+    if args.command == "dispatch-executor-run":
+        return main_dispatch_executor_run(args.args)
+    if args.command == "dispatch-reviewer-run":
+        return main_dispatch_reviewer_run(args.args)
+    if args.command == "dispatch-next-for-claimed-run":
+        return main_dispatch_next_for_claimed_run(args.args)
 
     print(f"Unknown command: {args.command}", file=sys.stderr)
     return 1

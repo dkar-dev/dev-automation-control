@@ -120,6 +120,12 @@ fi
 cp "$LOCAL_REPORT" "$OUTBOX_DIR/reviewer-report.md"
 [ -f "$LOCAL_LAST_MESSAGE" ] && cp "$LOCAL_LAST_MESSAGE" "$OUTBOX_DIR/reviewer-last-message.md" || true
 
+if [[ "${CONTROL_REVIEWER_SKIP_COMPLETION:-0}" == "1" ]]; then
+  state_set "reviewer_done" "" "await_reviewer_outcome"
+  "$SCRIPT_DIR/sync-outbox.sh" >/dev/null
+  exit 0
+fi
+
 set +e
 "$SCRIPT_DIR/complete-run-from-review.sh"
 complete_rc=$?

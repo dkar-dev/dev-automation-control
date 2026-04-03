@@ -519,7 +519,7 @@ def _select_next_runnable_row(connection: sqlite3.Connection, evaluated_at: str)
         JOIN projects ON projects.id = runs.project_id
         WHERE queue_items.status = 'queued'
           AND queue_items.available_at <= ?
-          AND runs.status = 'queued'
+          AND runs.status IN ('queued', 'running')
         ORDER BY
           CASE queue_items.priority_class
             WHEN 'system' THEN 0
@@ -709,12 +709,12 @@ def _ensure_claim_can_be_requeued(row: sqlite3.Row, database_path: Path) -> None
             database_path=database_path,
             details=f"actual_status={row['queue_status']}",
         )
-    if row["status"] != "queued":
+    if row["status"] not in {"queued", "running"}:
         raise SchedulerPersistenceError(
             code=CLAIMED_RUN_NOT_RELEASABLE,
             message=f"Run cannot be requeued after claim in status {row['status']}: {row['id']}",
             database_path=database_path,
-            details="Scheduler claim/release primitives are provisional and assume dispatch failed before any step_run started.",
+            details="Scheduler claim/release primitives only support active runs that are still dispatchable.",
         )
 
 

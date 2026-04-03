@@ -10,6 +10,7 @@ This repo is the control plane for orchestration between ChatGPT Web, n8n, Playw
   - `schemas/`
   - `examples/`
 - The v2 scaffold now includes storage/persistence utilities and scheduler claim primitives, but full runtime implementation is still intentionally not included.
+- The v2 scaffold now also includes a bounded manual dispatch adapter that can launch one claimed executor/reviewer action through the legacy host-side runtime without a full worker loop.
 - Migration from legacy pipeline to v2 is not completed yet.
 - The first executable v2 utilities now live in:
   - `scripts/validate-project-package`
@@ -29,8 +30,14 @@ This repo is the control plane for orchestration between ChatGPT Web, n8n, Playw
   - `scripts/claim-next-run`
   - `scripts/release-claimed-run`
   - `scripts/mark-claimed-run-dispatch-failed`
+  - `scripts/dispatch-executor-run`
+  - `scripts/dispatch-reviewer-run`
+  - `scripts/dispatch-next-for-claimed-run`
   - `scripts/smoke-control-plane-v2.sh`
-- Operator/dev usage notes for those utilities are in [`docs/control-plane-v2/bootstrap-and-validation.md`](/home/dkar/workspace/control/docs/control-plane-v2/bootstrap-and-validation.md).
+  - `scripts/smoke-control-plane-v2-dispatch.sh`
+- Operator/dev usage notes for those utilities are in:
+  - [`docs/control-plane-v2/bootstrap-and-validation.md`](/home/dkar/workspace/control/docs/control-plane-v2/bootstrap-and-validation.md)
+  - [`docs/control-plane-v2/manual-dispatch.md`](/home/dkar/workspace/control/docs/control-plane-v2/manual-dispatch.md)
 
 ## Single-task v1 contract
 - One active task at a time
@@ -43,6 +50,7 @@ This repo is the control plane for orchestration between ChatGPT Web, n8n, Playw
 - Real executor/reviewer runs are started by the host-side HTTP bridge, not by `Execute Command` inside the n8n Docker container.
 - n8n should call `http://host.docker.internal:8787` with `HTTP Request` nodes.
 - The bridge runs `control/scripts/run-executor.sh` and `control/scripts/run-reviewer.sh` on the host/WSL side, where Codex, worktrees, runtime, and project paths actually exist.
+- The v2 manual dispatch adapter reuses those same host-side scripts, but runs them inside an isolated per-dispatch sandbox and disables reviewer semantic auto-completion for the v2 reviewer path.
 - n8n should send symbolic instruction selectors only: `instruction_profile`, `instruction_overlays`, and `instructions_repo_path`.
 - The control layer resolves instruction files on the host, records the repo revision and exact files used, then builds the final executor/reviewer prompts locally.
 - `GET /current-run` now exposes `instruction_profile`, `instruction_overlays`, `instructions_repo_path`, `instructions_revision`, and `resolved_instruction_files`.
@@ -174,6 +182,14 @@ overlays/<name>/reviewer.md
   ```
 - The smoke script does not use the real Codex binary. It runs against a temporary copy of `control`, starts a temporary bridge, injects a fake `codex`, and validates both success and HTTP 500 failure paths.
 - It specifically verifies the commit-based handoff: executor changes are committed, `result.commit_sha` is persisted, reviewer resets to that commit, and reviewer completion still auto-finalizes the run.
+
+## Dispatch Adapter Smoke Test
+- Run the focused v2 dispatch smoke:
+  ```bash
+  cd /home/dkar/workspace/control
+  ./scripts/smoke-control-plane-v2-dispatch.sh
+  ```
+- This smoke uses the real v2 dispatch adapter plus the real legacy executor/reviewer backend scripts, injects a fake `codex`, verifies executor/reviewer `step_run` lifecycle persistence, artifact refs/logs/manifests, reviewer follow-up creation, and the dispatch-failed requeue path for a broken backend launch.
 
 ## Instruction Smoke Test
 - Validate a concrete instructions repo shape directly:

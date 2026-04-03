@@ -1,9 +1,9 @@
-# Control Plane v2 Bootstrap, Validation, Registry, Run, and Step Utilities
+# Control Plane v2 Bootstrap, Validation, Registry, Run, Step, and Manual Dispatch Utilities
 
 ## Scope
 - This step adds the first executable infrastructure layer for the v2 scaffold only.
-- It provides strict project package validation, SQLite schema bootstrap/init, project registry/import, root run creation/inspection, step_run lifecycle utilities, reviewer outcome/follow-up persistence, and provisional scheduler claim/release primitives.
-- It does not implement a full worker/runtime loop or real Codex execution.
+- It provides strict project package validation, SQLite schema bootstrap/init, project registry/import, root run creation/inspection, step_run lifecycle utilities, reviewer outcome/follow-up persistence, provisional scheduler claim/release primitives, and a bounded manual dispatch adapter for claimed runs.
+- It still does not implement a full worker/runtime loop or auto-continue policy engine.
 
 ## Project package validation
 
@@ -268,6 +268,7 @@ cd /home/dkar/workspace/control
 
 Scheduler primitive behavior in this step:
 - eligible queue item means `queue_items.status = queued` and `queue_items.available_at <= now`
+- eligible run status is now `queued` or `running`, so a requeued in-progress run can be claimed again after a technical dispatch failure
 - claim ordering is `system > interactive > background`
 - inside a class, the provisional v1 aging formula is `effective_age_seconds = max(0, now_utc - available_at_utc)`
 - after effective age, ties are broken by `enqueued_at`, then `queue_item.id`
@@ -283,6 +284,51 @@ Scheduler primitive behavior in this step:
 - release changes the queue item from `claimed -> queued`, clears `claimed_at`, optionally updates `available_at`, and appends a transition
 - dispatch-failed uses the same requeue shape as release, but writes a dedicated transition type plus required `reason_code`
 - dispatch-failed does not move the run to a terminal state by itself
+
+## Manual dispatch adapter
+
+Dispatch the executor for a claimed run:
+
+```bash
+cd /home/dkar/workspace/control
+./scripts/dispatch-executor-run \
+  --sqlite-db /tmp/control-plane-v2.sqlite \
+  --claim-json /tmp/claimed-run.json \
+  --context-json /tmp/context.json \
+  --artifact-root /tmp/control-plane-v2-artifacts \
+  --json
+```
+
+Dispatch the reviewer separately:
+
+```bash
+cd /home/dkar/workspace/control
+./scripts/dispatch-reviewer-run \
+  --sqlite-db /tmp/control-plane-v2.sqlite \
+  --run-id <run-id> \
+  --artifact-root /tmp/control-plane-v2-artifacts \
+  --json
+```
+
+Or auto-detect the next role:
+
+```bash
+cd /home/dkar/workspace/control
+./scripts/dispatch-next-for-claimed-run \
+  --sqlite-db /tmp/control-plane-v2.sqlite \
+  --run-id <run-id> \
+  --artifact-root /tmp/control-plane-v2-artifacts \
+  --json
+```
+
+Manual dispatch behavior in this step:
+- the run must already be claimed
+- role resolution is intentionally limited to `executor` and `reviewer`
+- the adapter reuses `run-executor.sh` and `run-reviewer.sh` as the backend runtime
+- reviewer dispatch explicitly disables legacy auto-completion so reviewer semantic outcome remains a separate `complete-reviewer-outcome` command
+- the adapter records minimal useful artifacts through `artifact_refs`: dispatch context/result manifests, resolved instruction manifests, stdout/stderr logs, prompt copy, and report file refs when present
+- a backend launch failure before execution requeues the claimed item through `mark-claimed-run-dispatch-failed`
+- a backend process that starts and then exits non-zero produces a terminal failed `step_run`; it is not treated as a dispatch-failed requeue
 
 Current safety boundary:
 - claim safety is provisional and assumes the accepted v1 single-machine shape
@@ -318,6 +364,22 @@ The smoke script verifies:
 - `show-run` returns the detailed payload
 - `start-step-run` starts executor/reviewer step runs
 - `finish-step-run` persists terminal step statuses
+
+Run the focused manual-dispatch smoke:
+
+```bash
+cd /home/dkar/workspace/control
+./scripts/smoke-control-plane-v2-dispatch.sh
+```
+
+The dispatch smoke verifies:
+- claim a queued run
+- executor dispatch through the v2 adapter and real legacy executor backend
+- terminal executor `step_run` persistence
+- reviewer dispatch through the v2 adapter and real legacy reviewer backend
+- artifact refs, logs, prompt copy, and manifests are persisted
+- reviewer semantic outcome remains separate and can create a follow-up run
+- a broken backend launch requeues the queue item cleanly through the dispatch-failed path
 - `retry-step-run` builds a retry chain with `attempt_no + 1` and `previous_step_run_id`
 - invalid retry from a non-terminal step fails cleanly
 - `list-step-runs` and `show-step-run` return the expected chain
