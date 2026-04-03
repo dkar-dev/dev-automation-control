@@ -79,6 +79,12 @@ from .runtime_cleanup_manager import (
     run_cleanup_once,
     show_cleanup_status,
 )
+from .task_intake import (
+    TaskIntakeError,
+    list_submitted_tasks,
+    show_submitted_task,
+    submit_bounded_task,
+)
 
 
 CONTROL_DIR = Path(__file__).resolve().parents[1]
@@ -1362,6 +1368,165 @@ def main_show_cleanup_status(argv: list[str] | None = None) -> int:
     return 0
 
 
+def main_submit_bounded_task(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(description="Submit one bounded task into Control Plane v2.")
+    parser.add_argument("--sqlite-db", required=True, help="SQLite database path bootstrapped with init-sqlite-v1")
+    parser.add_argument("--submission-json", help="Optional JSON file (or - for stdin) with the bounded task submission payload")
+    parser.add_argument("--project-key", help="Registered project key")
+    parser.add_argument("--task-text", help="Bounded task text")
+    parser.add_argument("--project-profile", help="Immutable project profile for the run")
+    parser.add_argument("--workflow-id", help="Immutable workflow identifier for the run")
+    parser.add_argument("--milestone", help="Immutable milestone value for the run")
+    parser.add_argument(
+        "--priority-class",
+        choices=PRIORITY_CLASSES,
+        help="Optional priority class override",
+    )
+    parser.add_argument("--instruction-profile", help="Optional instruction_profile override")
+    parser.add_argument("--instruction-overlay", action="append", dest="instruction_overlays", help="Append one instruction overlay override")
+    parser.add_argument("--source", help="Optional submission source override")
+    parser.add_argument("--thread-label", help="Optional thread_label override")
+    parser.add_argument("--constraint", action="append", dest="constraints", help="Append one task constraint")
+    parser.add_argument("--expected-output", action="append", dest="expected_output", help="Append one expected-output line")
+    parser.add_argument("--artifact-root", help="Optional artifact root override")
+    parser.add_argument("--workspace-root", help="Optional workspace root override")
+    parser.add_argument("--json", action="store_true", help="Print machine-readable JSON output")
+    args = parser.parse_args(argv)
+
+    try:
+        payload = _load_json_argument(args.submission_json) if args.submission_json else {}
+        payload = _merge_submission_cli_overrides(payload, args)
+        result = submit_bounded_task(args.sqlite_db, payload)
+    except DispatchAdapterError as exc:
+        payload = {
+            "ok": False,
+            "stage": "task_intake",
+            "error": {
+                "code": exc.code,
+                "message": exc.message,
+                "database_path": str(exc.database_path),
+                "details": exc.details,
+            },
+        }
+        if args.json:
+            print(json.dumps(payload, ensure_ascii=False, indent=2), file=sys.stderr)
+        else:
+            print(f"Bounded task submission failed: {exc.message}", file=sys.stderr)
+            if exc.details:
+                print(f"Details: {exc.details}", file=sys.stderr)
+        return 1
+    except TaskIntakeError as exc:
+        payload = {
+            "ok": False,
+            "stage": "task_intake",
+            "error": exc.to_dict(),
+        }
+        if args.json:
+            print(json.dumps(payload, ensure_ascii=False, indent=2), file=sys.stderr)
+        else:
+            print(f"Bounded task submission failed: {exc.message}", file=sys.stderr)
+            if exc.details:
+                print(f"Details: {exc.details}", file=sys.stderr)
+        return 1
+
+    payload = {
+        "ok": True,
+        "sqlite_db": str(Path(args.sqlite_db).expanduser().resolve()),
+        "submitted_task": result.to_dict(),
+    }
+    if args.json:
+        print(json.dumps(payload, ensure_ascii=False, indent=2))
+    else:
+        print(f"Submitted run: {result.run_details.run.id}")
+        print(f"Flow: {result.run_details.run.flow_id}")
+        print(f"Queue status: {result.run_details.run.queue_item.status if result.run_details.run.queue_item is not None else 'missing'}")
+        print(f"Task source: {result.runtime_context['source']}")
+    return 0
+
+
+def main_show_submitted_task(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(description="Show the persisted bounded task submission manifests for one run.")
+    parser.add_argument("--sqlite-db", required=True, help="SQLite database path bootstrapped with init-sqlite-v1")
+    parser.add_argument("run_id", help="Run identifier")
+    parser.add_argument("--json", action="store_true", help="Print machine-readable JSON output")
+    args = parser.parse_args(argv)
+
+    try:
+        result = show_submitted_task(args.sqlite_db, args.run_id)
+    except TaskIntakeError as exc:
+        payload = {
+            "ok": False,
+            "stage": "task_intake",
+            "error": exc.to_dict(),
+        }
+        if args.json:
+            print(json.dumps(payload, ensure_ascii=False, indent=2), file=sys.stderr)
+        else:
+            print(f"Submitted task lookup failed: {exc.message}", file=sys.stderr)
+            if exc.details:
+                print(f"Details: {exc.details}", file=sys.stderr)
+        return 1
+
+    payload = {
+        "ok": True,
+        "sqlite_db": str(Path(args.sqlite_db).expanduser().resolve()),
+        "submitted_task": result.to_dict(),
+    }
+    if args.json:
+        print(json.dumps(payload, ensure_ascii=False, indent=2))
+    else:
+        print(f"Run: {result.run_details.run.id}")
+        print(f"Task text: {result.submission_manifest['submission']['task_text']}")
+        print(f"Runtime source: {result.runtime_context_manifest['runtime_context']['source']}")
+        print(f"Artifacts: {len(result.artifacts)}")
+    return 0
+
+
+def main_list_submitted_tasks(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(description="List persisted bounded task submissions.")
+    parser.add_argument("--sqlite-db", required=True, help="SQLite database path bootstrapped with init-sqlite-v1")
+    parser.add_argument("--project-key", help="Optional registered project key filter")
+    parser.add_argument("--limit", type=int, default=100, help="Maximum number of submitted tasks to return")
+    parser.add_argument("--json", action="store_true", help="Print machine-readable JSON output")
+    args = parser.parse_args(argv)
+
+    try:
+        result = list_submitted_tasks(
+            args.sqlite_db,
+            project_key=args.project_key,
+            limit=args.limit,
+        )
+    except TaskIntakeError as exc:
+        payload = {
+            "ok": False,
+            "stage": "task_intake",
+            "error": exc.to_dict(),
+        }
+        if args.json:
+            print(json.dumps(payload, ensure_ascii=False, indent=2), file=sys.stderr)
+        else:
+            print(f"Submitted task listing failed: {exc.message}", file=sys.stderr)
+            if exc.details:
+                print(f"Details: {exc.details}", file=sys.stderr)
+        return 1
+
+    payload = {
+        "ok": True,
+        "sqlite_db": str(Path(args.sqlite_db).expanduser().resolve()),
+        "submitted_tasks": [item.to_dict() for item in result],
+    }
+    if args.json:
+        print(json.dumps(payload, ensure_ascii=False, indent=2))
+    else:
+        print(f"Submitted tasks: {len(result)}")
+        for item in result:
+            print(
+                f"- {item.run_id} | {item.project_key} | {item.workflow_id} | "
+                f"status={item.run_status} queue={item.queue_status or 'none'}"
+            )
+    return 0
+
+
 def main_list_flow_runs(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="List all runs inside one flow_id chain.")
     parser.add_argument("--sqlite-db", required=True, help="SQLite database path bootstrapped with init-sqlite-v1")
@@ -1715,6 +1880,33 @@ def _build_worker_runtime_config_from_args(args: argparse.Namespace) -> WorkerRu
         reviewer_runner_path=Path(args.reviewer_runner).expanduser().resolve() if getattr(args, "reviewer_runner", None) else None,
         claim_now=getattr(args, "claim_now", None),
     )
+
+
+def _merge_submission_cli_overrides(base_payload: dict[str, object], args: argparse.Namespace) -> dict[str, object]:
+    payload = dict(base_payload)
+    for key in (
+        "project_key",
+        "task_text",
+        "project_profile",
+        "workflow_id",
+        "milestone",
+        "priority_class",
+        "instruction_profile",
+        "source",
+        "thread_label",
+        "artifact_root",
+        "workspace_root",
+    ):
+        value = getattr(args, key, None)
+        if value is not None:
+            payload[key] = value
+    if getattr(args, "instruction_overlays", None) is not None:
+        payload["instruction_overlays"] = list(args.instruction_overlays)
+    if getattr(args, "constraints", None) is not None:
+        payload["constraints"] = list(args.constraints)
+    if getattr(args, "expected_output", None) is not None:
+        payload["expected_output"] = list(args.expected_output)
+    return payload
 
 
 def _load_json_argument(path: str) -> dict[str, object]:

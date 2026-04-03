@@ -21,8 +21,8 @@
 | `project.yaml` | Package-level metadata and contract version | `schema_version` | Not applicable |
 | `workflow.yaml` | Workflow contract placeholder | none yet | Yes |
 | `policy.yaml` | Policy contract placeholder plus optional cleanup retention policy | none yet | Yes |
-| `runtime.yaml` | Runtime contract placeholder | none yet | Yes |
-| `instructions.yaml` | Instruction contract placeholder | none yet | Yes |
+| `runtime.yaml` | Runtime contract placeholder plus optional bounded-task intake defaults | none yet | Yes |
+| `instructions.yaml` | Instruction contract placeholder plus optional bounded-task instruction defaults | none yet | Yes |
 | `capabilities.yaml` | Capability declarations | `sections` (mapping) | Yes, `sections: {}` is valid |
 
 ## `schema_version` location
@@ -52,6 +52,47 @@ cleanup_v1:
 - TTL values are currently expressed in seconds.
 - This block is consumed only by the bounded cleanup manager v1; it is not yet a broader policy engine contract.
 
+## Optional `runtime.yaml.bounded_task_runtime_v1`
+
+Current optional bounded task intake runtime block:
+
+```yaml
+bounded_task_runtime_v1:
+  workspace_root: /home/example/workspace
+  project_repo_path: /home/example/workspace/projects/sample-project
+  executor_worktree_path: /home/example/workspace/runtime/worktrees/sample-project-executor
+  reviewer_worktree_path: /home/example/workspace/runtime/worktrees/sample-project-reviewer
+  instructions_repo_path: /home/example/workspace/instructions
+  artifact_root: /home/example/workspace/control-artifacts
+  branch_base: main
+  mode: executor+reviewer
+  auto_commit: false
+  source: intake-default
+  thread_label: sample-project-default
+```
+
+- All fields are optional.
+- `workspace_root` can be used instead of explicit path fields; the intake layer derives:
+  - `projects/<project_key>`
+  - `runtime/worktrees/<project_key>-executor`
+  - `runtime/worktrees/<project_key>-reviewer`
+  - `instructions`
+- If neither explicit paths nor `workspace_root` are available, bounded-task submission fails explicitly.
+
+## Optional `instructions.yaml.bounded_task_intake_v1`
+
+Current optional bounded task instruction-default block:
+
+```yaml
+bounded_task_intake_v1:
+  instruction_profile: default
+  instruction_overlays:
+    - docs-only
+```
+
+- `instruction_profile` becomes the default profile for `submit-bounded-task`.
+- `instruction_overlays` becomes the default overlay list unless submission overrides it.
+
 ## Hard validation errors (current)
 - Project package directory missing under `projects/`.
 - Any required YAML file is missing.
@@ -70,6 +111,7 @@ cleanup_v1:
 - TODO(OPEN_ISSUE): Approve `schema_version` format and compatibility policy.
 - TODO(OPEN_ISSUE): Approve minimal mandatory keys for `workflow.yaml`.
 - TODO(OPEN_ISSUE): Decide whether `cleanup_v1` remains optional or becomes part of a broader required policy contract.
+- TODO(OPEN_ISSUE): Decide whether bounded-task intake config blocks stay optional or graduate into a stricter project runtime contract.
 - TODO(OPEN_ISSUE): Approve minimal mandatory keys for `runtime.yaml`.
 - TODO(OPEN_ISSUE): Approve minimal mandatory keys for `instructions.yaml`.
 - TODO(OPEN_ISSUE): Approve canonical capabilities sections list.

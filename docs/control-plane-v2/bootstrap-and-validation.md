@@ -1,8 +1,8 @@
-# Control Plane v2 Bootstrap, Validation, SQLite Migrations, Registry, Run, Step, Dispatch, Worker, Manual Control, and Cleanup Utilities
+# Control Plane v2 Bootstrap, Validation, SQLite Migrations, Registry, Intake, Run, Step, Dispatch, Worker, Manual Control, and Cleanup Utilities
 
 ## Scope
 - This step adds the first executable infrastructure layer for the v2 scaffold only.
-- It provides strict project package validation, SQLite schema bootstrap/init, SQLite migration management, project registry/import, root run creation/inspection, step_run lifecycle utilities, reviewer outcome/follow-up persistence, provisional scheduler claim/release primitives, a bounded manual dispatch adapter for claimed runs, a bounded single-worker loop v1, a bounded manual control/recovery layer v1, and a bounded runtime cleanup manager v1.
+- It provides strict project package validation, SQLite schema bootstrap/init, SQLite migration management, project registry/import, bounded task intake/run submission, root run creation/inspection, step_run lifecycle utilities, reviewer outcome/follow-up persistence, provisional scheduler claim/release primitives, a bounded manual dispatch adapter for claimed runs, a bounded single-worker loop v1, a bounded manual control/recovery layer v1, and a bounded runtime cleanup manager v1.
 - It still does not implement a daemon/service runtime, multi-worker protocol, or auto-continue policy engine.
 
 ## Project package validation
@@ -133,6 +133,89 @@ Registry behavior in this step:
 - re-registering an existing project updates `package_root` and `updated_at`
 - project YAML/config content remains sourced only from the control repo package under `projects/<project-key>/`
 - project config is not copied into SQLite
+
+## Bounded task intake / run submission v1
+
+Submit one bounded task through the unified intake path:
+
+```bash
+cd /home/dkar/workspace/control
+./scripts/submit-bounded-task \
+  --sqlite-db /tmp/control-plane-v2.sqlite \
+  --project-key sample-project \
+  --task-text "Implement the bounded task intake bridge." \
+  --project-profile default \
+  --workflow-id build \
+  --milestone intake-v1 \
+  --workspace-root /home/dkar/workspace \
+  --json
+```
+
+Or submit from a JSON payload:
+
+```bash
+cd /home/dkar/workspace/control
+./scripts/submit-bounded-task \
+  --sqlite-db /tmp/control-plane-v2.sqlite \
+  --submission-json /tmp/submission.json \
+  --json
+```
+
+Inspect a submitted task:
+
+```bash
+cd /home/dkar/workspace/control
+./scripts/show-submitted-task --sqlite-db /tmp/control-plane-v2.sqlite <run-id> --json
+```
+
+List recent submitted tasks:
+
+```bash
+cd /home/dkar/workspace/control
+./scripts/list-submitted-tasks --sqlite-db /tmp/control-plane-v2.sqlite --project-key sample-project --json
+```
+
+Required submission fields in this step:
+- `project_key`
+- `task_text`
+- `project_profile`
+- `workflow_id`
+- `milestone`
+
+Optional submission fields in this step:
+- `priority_class`
+- `instruction_profile`
+- `instruction_overlays`
+- `source`
+- `thread_label`
+- `constraints`
+- `expected_output`
+- `artifact_root`
+- `workspace_root`
+
+Runtime context assembly behavior:
+- intake validates that `project_key` is already registered in SQLite
+- project package files remain the source of truth; the intake layer does not persist full config copies into SQLite
+- runtime defaults come from `runtime.yaml.bounded_task_runtime_v1`
+- instruction defaults come from `instructions.yaml.bounded_task_intake_v1`
+- submission may override only the bounded-task fields listed above
+- `workspace_root` may derive:
+  - `project_repo_path = <workspace_root>/projects/<project_key>`
+  - `executor_worktree_path = <workspace_root>/runtime/worktrees/<project_key>-executor`
+  - `reviewer_worktree_path = <workspace_root>/runtime/worktrees/<project_key>-reviewer`
+  - `instructions_repo_path = <workspace_root>/instructions`
+
+Persistence behavior:
+- intake creates the root run through the existing `create-root-run` path
+- it stores `task-submission.json` and `runtime-context.json` under the run artifact tree when available
+- both manifests are recorded in `artifact_refs` as:
+  - `task_submission_manifest`
+  - `task_runtime_context_manifest`
+
+Worker integration in this step:
+- a successfully submitted run is immediately queue-eligible
+- `run-worker-tick` and `run-worker-until-idle` can pick it up without a separate `context.json`
+- the dispatch adapter reuses the persisted runtime-context manifest as the worker-side runtime input source
 
 ## Root run creation and inspection
 
@@ -763,6 +846,19 @@ The cleanup smoke verifies:
 - claimed runs can be released back to `queued`
 - dispatch-failed requeues the claimed run and writes append-only transitions with reason metadata
 - one claimed queue item is not claimed twice while still claimed
+
+Run the focused intake smoke:
+
+```bash
+cd /home/dkar/workspace/control
+./scripts/smoke-control-plane-v2-intake.sh
+```
+
+The intake smoke verifies:
+- explicit failure when required runtime defaults cannot be assembled
+- root run creation plus intake manifest persistence
+- submission overrides for overlays, source, and thread label
+- worker pickup without a separate dispatch `context.json`
 
 ## Boundaries of this step
 - No daemonized worker/service manager.

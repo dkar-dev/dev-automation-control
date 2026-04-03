@@ -34,6 +34,8 @@ ARTIFACT_KIND_PROMPT_COPY = "prompt_copy"
 ARTIFACT_KIND_RESOLVED_CONTEXT_MANIFEST = "resolved_context_manifest"
 ARTIFACT_KIND_STDERR_LOG = "stderr_log"
 ARTIFACT_KIND_STDOUT_LOG = "stdout_log"
+ARTIFACT_KIND_TASK_RUNTIME_CONTEXT_MANIFEST = "task_runtime_context_manifest"
+ARTIFACT_KIND_TASK_SUBMISSION_MANIFEST = "task_submission_manifest"
 ARTIFACT_KIND_STEP_REPORT = "step_report"
 ARTIFACT_KIND_STEP_RESULT_JSON = "step_result_json"
 ARTIFACT_KIND_STEP_STATE_JSON = "step_state_json"
@@ -526,8 +528,16 @@ def dispatch_claimed_run(
         executor_runner_path=executor_runner_path,
         reviewer_runner_path=reviewer_runner_path,
     )
+    submitted_runtime_context = _extract_runtime_context_from_manifest(
+        _load_latest_artifact_manifest(
+            resolved_db_path,
+            dispatch_run.run.id,
+            artifact_kind=ARTIFACT_KIND_TASK_RUNTIME_CONTEXT_MANIFEST,
+        )
+    )
     merged_context = _merge_runtime_context_inputs(
         claim_payload=claim_payload,
+        persisted_runtime_context=submitted_runtime_context,
         runtime_context=runtime_context,
         workspace_root=workspace_root,
         project_key=dispatch_run.run.project_key,
@@ -557,9 +567,12 @@ def dispatch_claimed_run(
         merged_context=merged_context,
         previous_manifest=previous_executor_manifest,
     )
+    effective_artifact_root = artifact_root
+    if effective_artifact_root is None:
+        effective_artifact_root = _string_or_none(merged_context.get("artifact_root"))
     run_artifact_directory = (
-        _resolve_run_artifact_directory(artifact_root, dispatch_run)
-        if artifact_root is not None
+        _resolve_run_artifact_directory(effective_artifact_root, dispatch_run)
+        if effective_artifact_root is not None
         else None
     )
 
@@ -827,6 +840,7 @@ def _extract_claim_object(claim_payload: Mapping[str, object]) -> Mapping[str, o
 def _merge_runtime_context_inputs(
     *,
     claim_payload: Mapping[str, object] | None,
+    persisted_runtime_context: Mapping[str, object] | None,
     runtime_context: Mapping[str, object] | None,
     workspace_root: str | Path | None,
     project_key: str,
@@ -845,6 +859,8 @@ def _merge_runtime_context_inputs(
     expected_output: list[str] | tuple[str, ...] | None,
 ) -> dict[str, object]:
     merged: dict[str, object] = {}
+    if persisted_runtime_context is not None:
+        merged.update(dict(persisted_runtime_context))
     if claim_payload is not None:
         merged.update(_extract_runtime_context_from_mapping(claim_payload))
     if runtime_context is not None:
@@ -855,6 +871,7 @@ def _merge_runtime_context_inputs(
         merged.setdefault("project_repo_path", str(resolved_workspace_root / "projects" / project_key))
         merged.setdefault("executor_worktree_path", str(resolved_workspace_root / "runtime" / "worktrees" / f"{project_key}-executor"))
         merged.setdefault("reviewer_worktree_path", str(resolved_workspace_root / "runtime" / "worktrees" / f"{project_key}-reviewer"))
+        merged.setdefault("instructions_repo_path", str(resolved_workspace_root / "instructions"))
 
     if project_repo_path is not None:
         merged["project_repo_path"] = str(Path(project_repo_path).expanduser().resolve())
@@ -1506,11 +1523,26 @@ def _load_latest_dispatch_result_manifest(
     *,
     step_key: str | None,
 ) -> Mapping[str, object] | None:
+    return _load_latest_artifact_manifest(
+        database_path,
+        run_id,
+        artifact_kind=ARTIFACT_KIND_DISPATCH_RESULT_MANIFEST,
+        step_key=step_key,
+    )
+
+
+def _load_latest_artifact_manifest(
+    database_path: Path,
+    run_id: str,
+    *,
+    artifact_kind: str,
+    step_key: str | None = None,
+) -> Mapping[str, object] | None:
     connection = _connect_run_db(database_path)
     try:
         _ensure_required_tables(connection, database_path, ("artifact_refs", "step_runs"))
         filters = ["artifact_refs.run_id = ?", "artifact_refs.artifact_kind = ?"]
-        params: list[object] = [run_id, ARTIFACT_KIND_DISPATCH_RESULT_MANIFEST]
+        params: list[object] = [run_id, artifact_kind]
         if step_key is not None:
             filters.append("step_runs.step_key = ?")
             params.append(step_key)
@@ -1532,6 +1564,23 @@ def _load_latest_dispatch_result_manifest(
         return None
     finally:
         connection.close()
+
+
+def _extract_runtime_context_from_manifest(manifest: Mapping[str, object] | None) -> Mapping[str, object] | None:
+    if manifest is None:
+        return None
+    runtime_context = manifest.get("runtime_context")
+    if isinstance(runtime_context, Mapping):
+        return runtime_context
+    return manifest if any(
+        key in manifest
+        for key in (
+            "task_text",
+            "project_repo_path",
+            "executor_worktree_path",
+            "instructions_repo_path",
+        )
+    ) else None
 
 
 def _resolve_run_artifact_directory(artifact_root: str | Path, dispatch_run: DispatchRunPayload) -> Path:

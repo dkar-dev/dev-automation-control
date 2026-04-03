@@ -43,6 +43,19 @@ The executor dispatch needs legacy runtime context in JSON. The easiest path is 
 - The adapter also accepts path/selector overrides on the CLI.
 - After a successful executor dispatch, the adapter persists a dispatch result manifest and artifact refs, so reviewer dispatch can usually reuse the same context from `--run-id` alone.
 
+If you use the bounded intake path first:
+
+```bash
+cd /home/dkar/workspace/control
+./scripts/submit-bounded-task --sqlite-db /tmp/control-plane-v2.sqlite --submission-json /tmp/submission.json --json
+```
+
+- the intake layer persists `task_submission_manifest` and `task_runtime_context_manifest`
+- `run-worker-tick` can later claim the queued run and dispatch it without a separate manual `context.json`
+- operator inspection is available through:
+  - `./scripts/show-submitted-task`
+  - `./scripts/list-submitted-tasks`
+
 ## Dispatch executor
 
 ```bash
