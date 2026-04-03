@@ -9,7 +9,7 @@ This repo is the control plane for orchestration between ChatGPT Web, n8n, Playw
   - `projects/`
   - `schemas/`
   - `examples/`
-- The v2 scaffold is contract/documentation/config-structure only in this step. Runtime implementation is intentionally not included.
+- The v2 scaffold now includes storage/persistence utilities and scheduler claim primitives, but full runtime implementation is still intentionally not included.
 - Migration from legacy pipeline to v2 is not completed yet.
 - The first executable v2 utilities now live in:
   - `scripts/validate-project-package`
@@ -26,6 +26,9 @@ This repo is the control plane for orchestration between ChatGPT Web, n8n, Playw
   - `scripts/show-step-run`
   - `scripts/complete-reviewer-outcome`
   - `scripts/list-flow-runs`
+  - `scripts/claim-next-run`
+  - `scripts/release-claimed-run`
+  - `scripts/mark-claimed-run-dispatch-failed`
   - `scripts/smoke-control-plane-v2.sh`
 - Operator/dev usage notes for those utilities are in [`docs/control-plane-v2/bootstrap-and-validation.md`](/home/dkar/workspace/control/docs/control-plane-v2/bootstrap-and-validation.md).
 

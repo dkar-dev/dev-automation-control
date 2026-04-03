@@ -2,8 +2,8 @@
 
 ## Scope
 - This step adds the first executable infrastructure layer for the v2 scaffold only.
-- It provides strict project package validation, SQLite schema bootstrap/init, project registry/import, root run creation/inspection, step_run lifecycle utilities, and reviewer outcome/follow-up persistence.
-- It does not implement scheduler behavior or worker/runtime execution.
+- It provides strict project package validation, SQLite schema bootstrap/init, project registry/import, root run creation/inspection, step_run lifecycle utilities, reviewer outcome/follow-up persistence, and provisional scheduler claim/release primitives.
+- It does not implement a full worker/runtime loop or real Codex execution.
 
 ## Project package validation
 
@@ -139,7 +139,7 @@ Root run behavior in this step:
 - a new `flow_id` is created for each root run
 - run scope is immutable at creation time: `project`, `project_profile`, `workflow_id`, `milestone`
 - provisional `origin_type` is currently fixed to `root_manual` for this path only
-- scheduler claims and runtime execution are not implemented
+- full worker/runtime execution is not implemented
 
 ## Step run lifecycle
 
@@ -235,6 +235,60 @@ Cycle and guardrail behavior in this step:
 - provisional `max_wall_clock_time` is currently measured from the first run `created_at` in the flow to the reviewer outcome decision time
 - provisional `max_wall_clock_time` is currently fixed in code to `86400` seconds until policy/config semantics are frozen
 
+## Scheduler claim, release, and dispatch-failed primitives
+
+Claim the next runnable queued run:
+
+```bash
+cd /home/dkar/workspace/control
+./scripts/claim-next-run --sqlite-db /tmp/control-plane-v2.sqlite --json
+```
+
+Release a claimed queue item back to `queued`:
+
+```bash
+cd /home/dkar/workspace/control
+./scripts/release-claimed-run \
+  --sqlite-db /tmp/control-plane-v2.sqlite \
+  --run-id <run-id> \
+  --available-at 2026-01-01T00:00:00Z \
+  --json
+```
+
+Record dispatch failure or abandoned claim and requeue the item:
+
+```bash
+cd /home/dkar/workspace/control
+./scripts/mark-claimed-run-dispatch-failed \
+  --sqlite-db /tmp/control-plane-v2.sqlite \
+  --queue-item-id <queue-item-id> \
+  --reason-code dispatch_failed \
+  --json
+```
+
+Scheduler primitive behavior in this step:
+- eligible queue item means `queue_items.status = queued` and `queue_items.available_at <= now`
+- claim ordering is `system > interactive > background`
+- inside a class, the provisional v1 aging formula is `effective_age_seconds = max(0, now_utc - available_at_utc)`
+- after effective age, ties are broken by `enqueued_at`, then `queue_item.id`
+- claim is atomic inside one SQLite transaction using `BEGIN IMMEDIATE`
+- claim changes only the `queue_items` row from `queued -> claimed` and appends a `state_transitions` row
+- claim does not move `runs.status` to `running`; that still happens later when a real `step_run` starts
+- claim returns machine-readable payload for future dispatch containing:
+  - run
+  - queue item
+  - project registry info
+  - project package root
+  - minimal flow context
+- release changes the queue item from `claimed -> queued`, clears `claimed_at`, optionally updates `available_at`, and appends a transition
+- dispatch-failed uses the same requeue shape as release, but writes a dedicated transition type plus required `reason_code`
+- dispatch-failed does not move the run to a terminal state by itself
+
+Current safety boundary:
+- claim safety is provisional and assumes the accepted v1 single-machine shape
+- the implementation serializes claims with SQLite write locking, but there is still no lease heartbeat, ownership token, or finalized multi-worker protocol
+- this step still does not launch real Codex or implement an executor/reviewer worker loop
+
 ## Smoke checks
 
 Run the isolated smoke coverage for validator and SQLite bootstrap:
@@ -272,16 +326,19 @@ The smoke script verifies:
 - reviewer `changes_requested` creates follow-up runs until cycle `3`
 - reviewer `changes_requested` past cycle `3` stops the current run cleanly
 - `list-flow-runs` returns the ordered flow chain
+- scheduler claim returns the highest-priority eligible run
+- same-class scheduler ordering is stable and deterministic
+- claimed runs can be released back to `queued`
+- dispatch-failed requeues the claimed run and writes append-only transitions with reason metadata
+- one claimed queue item is not claimed twice while still claimed
 
 ## Boundaries of this step
-- No scheduler.
-- No worker loop.
+- No full worker loop.
 - No runtime execution.
-- No queue execution.
-- No project import of YAML/config payload into SQLite beyond registry metadata.
-- No automatic claim/dispatch.
-- No claim/worker execution.
 - No real Codex launch.
+- No finalized multi-worker scheduler protocol.
+- No project import of YAML/config payload into SQLite beyond registry metadata.
+- No automatic executor/reviewer dispatch after claim.
 - No legacy pipeline behavior changes.
 
 ## OPEN_ISSUE / TODO

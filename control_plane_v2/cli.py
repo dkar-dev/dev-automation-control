@@ -23,6 +23,12 @@ from .reviewer_outcome_persistence import (
     complete_reviewer_outcome,
     list_flow_runs,
 )
+from .scheduler_persistence import (
+    SchedulerPersistenceError,
+    claim_next_run,
+    mark_claimed_run_dispatch_failed,
+    release_claimed_run,
+)
 from .step_run_persistence import (
     STEP_KEYS,
     STEP_RUN_TERMINAL_STATUSES,
@@ -673,6 +679,163 @@ def main_list_flow_runs(argv: list[str] | None = None) -> int:
     return 0
 
 
+def main_claim_next_run(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(description="Atomically claim the next runnable queued run.")
+    parser.add_argument("--sqlite-db", required=True, help="SQLite database path bootstrapped with init-sqlite-v1")
+    parser.add_argument(
+        "--now",
+        help="Optional ISO-8601 timestamp used for eligibility and effective-age evaluation",
+    )
+    parser.add_argument("--json", action="store_true", help="Print machine-readable JSON output")
+    args = parser.parse_args(argv)
+
+    try:
+        claim_result = claim_next_run(args.sqlite_db, now=args.now)
+    except SchedulerPersistenceError as exc:
+        payload = {
+            "ok": False,
+            "stage": "scheduler_persistence",
+            "error": exc.to_dict(),
+        }
+        if args.json:
+            print(json.dumps(payload, ensure_ascii=False, indent=2), file=sys.stderr)
+        else:
+            print(f"Failed to claim next run: {exc.message}", file=sys.stderr)
+            if exc.details:
+                print(f"Details: {exc.details}", file=sys.stderr)
+        return 1
+
+    payload = {
+        "ok": True,
+        "sqlite_db": str(Path(args.sqlite_db).expanduser().resolve()),
+        "claim": claim_result.to_dict() if claim_result is not None else None,
+    }
+    if args.json:
+        print(json.dumps(payload, ensure_ascii=False, indent=2))
+    else:
+        if claim_result is None:
+            print("No runnable run is currently eligible for claim.")
+        else:
+            print(f"Claimed run: {claim_result.dispatch_run.run.id}")
+            print(f"Queue item: {claim_result.dispatch_run.queue_item.id}")
+            print(
+                f"Priority: {claim_result.dispatch_run.queue_item.priority_class} "
+                f"(rank={claim_result.priority_rank})"
+            )
+            print(f"Flow: {claim_result.dispatch_run.flow_context.flow_id}")
+            print(f"Effective age seconds: {claim_result.effective_age_seconds}")
+    return 0
+
+
+def main_release_claimed_run(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(description="Return a claimed queue item back to queued.")
+    parser.add_argument("--sqlite-db", required=True, help="SQLite database path bootstrapped with init-sqlite-v1")
+    target_group = parser.add_mutually_exclusive_group(required=True)
+    target_group.add_argument("--run-id", help="Claimed run identifier to release")
+    target_group.add_argument("--queue-item-id", help="Claimed queue item identifier to release")
+    parser.add_argument(
+        "--available-at",
+        help="Optional ISO-8601 timestamp to use as the next available_at value (defaults to now)",
+    )
+    parser.add_argument("--note", help="Optional short note stored in transition metadata")
+    parser.add_argument("--json", action="store_true", help="Print machine-readable JSON output")
+    args = parser.parse_args(argv)
+
+    try:
+        result = release_claimed_run(
+            args.sqlite_db,
+            run_id=args.run_id,
+            queue_item_id=args.queue_item_id,
+            available_at=args.available_at,
+            note=args.note,
+        )
+    except SchedulerPersistenceError as exc:
+        payload = {
+            "ok": False,
+            "stage": "scheduler_persistence",
+            "error": exc.to_dict(),
+        }
+        if args.json:
+            print(json.dumps(payload, ensure_ascii=False, indent=2), file=sys.stderr)
+        else:
+            print(f"Failed to release claimed run: {exc.message}", file=sys.stderr)
+            if exc.details:
+                print(f"Details: {exc.details}", file=sys.stderr)
+        return 1
+
+    payload = {
+        "ok": True,
+        "sqlite_db": str(Path(args.sqlite_db).expanduser().resolve()),
+        "release": result.to_dict(),
+    }
+    if args.json:
+        print(json.dumps(payload, ensure_ascii=False, indent=2))
+    else:
+        print(f"Released run: {result.dispatch_run.run.id}")
+        print(f"Queue item: {result.dispatch_run.queue_item.id}")
+        print(f"Available at: {result.dispatch_run.queue_item.available_at}")
+    return 0
+
+
+def main_mark_claimed_run_dispatch_failed(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(
+        description="Record a dispatch failure or abandoned claim and requeue the claimed run."
+    )
+    parser.add_argument("--sqlite-db", required=True, help="SQLite database path bootstrapped with init-sqlite-v1")
+    target_group = parser.add_mutually_exclusive_group(required=True)
+    target_group.add_argument("--run-id", help="Claimed run identifier to mark")
+    target_group.add_argument("--queue-item-id", help="Claimed queue item identifier to mark")
+    parser.add_argument(
+        "--reason-code",
+        required=True,
+        help="Machine-readable dispatch-failure reason (for example: dispatch_failed or claim_abandoned)",
+    )
+    parser.add_argument(
+        "--available-at",
+        help="Optional ISO-8601 timestamp to use as the next available_at value (defaults to now)",
+    )
+    parser.add_argument("--note", help="Optional short note stored in transition metadata")
+    parser.add_argument("--json", action="store_true", help="Print machine-readable JSON output")
+    args = parser.parse_args(argv)
+
+    try:
+        result = mark_claimed_run_dispatch_failed(
+            args.sqlite_db,
+            run_id=args.run_id,
+            queue_item_id=args.queue_item_id,
+            reason_code=args.reason_code,
+            available_at=args.available_at,
+            note=args.note,
+        )
+    except SchedulerPersistenceError as exc:
+        payload = {
+            "ok": False,
+            "stage": "scheduler_persistence",
+            "error": exc.to_dict(),
+        }
+        if args.json:
+            print(json.dumps(payload, ensure_ascii=False, indent=2), file=sys.stderr)
+        else:
+            print(f"Failed to mark dispatch failure: {exc.message}", file=sys.stderr)
+            if exc.details:
+                print(f"Details: {exc.details}", file=sys.stderr)
+        return 1
+
+    payload = {
+        "ok": True,
+        "sqlite_db": str(Path(args.sqlite_db).expanduser().resolve()),
+        "dispatch_failure": result.to_dict(),
+    }
+    if args.json:
+        print(json.dumps(payload, ensure_ascii=False, indent=2))
+    else:
+        print(f"Dispatch failure recorded for run: {result.dispatch_run.run.id}")
+        print(f"Queue item: {result.dispatch_run.queue_item.id}")
+        print(f"Reason code: {result.transition.reason_code}")
+        print(f"Available at: {result.dispatch_run.queue_item.available_at}")
+    return 0
+
+
 def _format_validation_error(error: object) -> str:
     error_dict = error.to_dict()
     location = error_dict["file_path"] or error_dict["package_root"]
@@ -727,6 +890,15 @@ def main() -> int:
     list_flow_parser = subparsers.add_parser("list-flow-runs")
     list_flow_parser.add_argument("args", nargs=argparse.REMAINDER)
 
+    claim_next_parser = subparsers.add_parser("claim-next-run")
+    claim_next_parser.add_argument("args", nargs=argparse.REMAINDER)
+
+    release_claimed_parser = subparsers.add_parser("release-claimed-run")
+    release_claimed_parser.add_argument("args", nargs=argparse.REMAINDER)
+
+    mark_dispatch_failed_parser = subparsers.add_parser("mark-claimed-run-dispatch-failed")
+    mark_dispatch_failed_parser.add_argument("args", nargs=argparse.REMAINDER)
+
     args = parser.parse_args()
 
     if args.command == "validate-project-package":
@@ -757,6 +929,12 @@ def main() -> int:
         return main_complete_reviewer_outcome(args.args)
     if args.command == "list-flow-runs":
         return main_list_flow_runs(args.args)
+    if args.command == "claim-next-run":
+        return main_claim_next_run(args.args)
+    if args.command == "release-claimed-run":
+        return main_release_claimed_run(args.args)
+    if args.command == "mark-claimed-run-dispatch-failed":
+        return main_mark_claimed_run_dispatch_failed(args.args)
 
     print(f"Unknown command: {args.command}", file=sys.stderr)
     return 1

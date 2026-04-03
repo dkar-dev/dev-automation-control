@@ -2,7 +2,8 @@
 
 ## Status
 - Accepted contract for v1 SQLite-backed storage and queue model.
-- Scheduler, worker loop, and manual operations API remain out of scope in this step.
+- Provisional scheduler claim/release primitives now exist for the accepted single-machine v1 shape.
+- Full worker loop, real execution, and manual operations API remain out of scope in this step.
 
 ## Scope
 - Fix the storage model for:
@@ -17,12 +18,12 @@
 - Keep legacy runtime behavior unchanged in this step.
 
 ## Non-goals in this step
-- No scheduler implementation.
 - No worker loop.
 - No runtime execution code.
 - No SQL migrations framework.
 - No changes to legacy single-run scripts as executable behavior.
 - No manual operations API implementation.
+- No finalized multi-worker claim lease protocol.
 
 ## Storage split
 
@@ -146,7 +147,8 @@ Nullable fields:
 Notes:
 - v1 stores one active queue record per run.
 - Queue state is mutable, but queue history is append-only in `state_transitions`.
-- `claimed_at` and `terminal_at` stay null until the queue item is claimed or reaches a terminal queue state.
+- `available_at` may move forward when a claimed item is requeued.
+- `claimed_at` and `terminal_at` stay null until the queue item is claimed or reaches a terminal queue state, and `claimed_at` may be cleared again if the claim is released before dispatch starts.
 - `priority_class` values for v1 are:
   - `system`
   - `interactive`
@@ -292,10 +294,10 @@ Interpretation:
 - `run_id`
 - `priority_class`
 - `enqueued_at`
-- `available_at`
 
 ### Mutable on `queue_items`
 - `status`
+- `available_at`
 - `claimed_at`
 - `terminal_at`
 
@@ -368,7 +370,7 @@ Filesystem stores:
 
 ### Transition rules
 - New runs are inserted as `queued`.
-- `queued -> running` when the run is claimed for execution.
+- `queued -> running` when actual execution starts after a successful claim.
 - `running -> completed` when the run finishes normally, including the case where it produces a follow-up run.
 - `running -> failed` when the run finishes unsuccessfully and no follow-up run is created.
 - `queued -> stopped` or `running -> stopped` when hard-stop or guardrail rules block further execution.
@@ -379,7 +381,8 @@ Filesystem stores:
 - It also inserts one linked `queue_item` in `queued` and append-only initial state transition rows.
 - It can also start and finish `step_runs`, create retry `step_runs`, move a queued run to `running`, and move a queued queue item to `claimed`.
 - It can also complete reviewer outcomes, stop/complete the current run, complete/cancel the current queue item, create queued reviewer follow-up runs, and write key `run_snapshots`.
-- Queue selection and real execution transitions are not implemented yet.
+- It can now select the next runnable queued item, atomically claim it for dispatch, release it back to `queued`, and record dispatch-failed requeue transitions.
+- Real execution transitions and a full worker loop are still not implemented.
 
 ### Interpretation rule
 - `runs.status` models execution lifecycle only.
@@ -454,10 +457,39 @@ Within the same class, ordering is by:
 - Persistent `interactive` load may starve `background`.
 
 ### Scheduler contract boundary
-- The exact aging formula is intentionally left out of this storage contract.
+- The current executable layer uses the provisional formula `effective_age_seconds = max(0, now_utc - available_at_utc)`.
 - What is fixed here is the boundary:
   - aging is allowed only inside a class
   - class precedence is never violated
+  - ties after effective age are broken by `enqueued_at`, then `queue_item.id`
+
+## Scheduler claim/requeue primitives
+
+### Current claim behavior
+- claim reads the next runnable queue item and updates it inside one SQLite `BEGIN IMMEDIATE` transaction
+- claim moves only `queue_items.status` from `queued` to `claimed`
+- claim writes an append-only `state_transitions` row with transition type `queue_item_claimed_for_dispatch`
+- claim returns machine-readable payload containing run, queue item, project registry metadata, package root, and minimal flow context
+- claim leaves `runs.status = queued` until a later real execution step starts
+
+### Current release behavior
+- release is for a claimed queue item whose dispatch never actually started
+- release moves the queue item from `claimed` back to `queued`
+- release clears `claimed_at`
+- release may update `available_at`
+- release writes an append-only `state_transitions` row with transition type `queue_item_released_to_queue`
+
+### Current dispatch-failed behavior
+- dispatch-failed is a separate requeue path for failed dispatch or abandoned claim cases
+- dispatch-failed also moves the queue item from `claimed` back to `queued`
+- dispatch-failed writes transition type `queue_item_dispatch_failed_requeued`
+- dispatch-failed requires reason metadata via `reason_code`
+- dispatch-failed does not force the owning run into a terminal state
+
+### Safety boundary
+- current safety assumes the accepted v1 shape of one scheduler/worker process on one Linux machine
+- SQLite write locking serializes claims, but there is no heartbeat, lease timeout, ownership token, or multi-worker fencing yet
+- a finalized multi-worker protocol remains intentionally unresolved in this contract step
 
 ## Hard stop and guardrail rules for an atomic flow
 

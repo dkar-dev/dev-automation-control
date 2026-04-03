@@ -32,10 +32,13 @@ register_script = control_dir / "scripts" / "register-project-package"
 list_script = control_dir / "scripts" / "list-registered-projects"
 create_run_script = control_dir / "scripts" / "create-root-run"
 complete_reviewer_script = control_dir / "scripts" / "complete-reviewer-outcome"
+claim_next_script = control_dir / "scripts" / "claim-next-run"
 finish_step_script = control_dir / "scripts" / "finish-step-run"
 list_flow_runs_script = control_dir / "scripts" / "list-flow-runs"
 list_runs_script = control_dir / "scripts" / "list-runs"
 list_step_runs_script = control_dir / "scripts" / "list-step-runs"
+mark_dispatch_failed_script = control_dir / "scripts" / "mark-claimed-run-dispatch-failed"
+release_claimed_script = control_dir / "scripts" / "release-claimed-run"
 retry_step_script = control_dir / "scripts" / "retry-step-run"
 show_run_script = control_dir / "scripts" / "show-run"
 show_step_run_script = control_dir / "scripts" / "show-step-run"
@@ -71,12 +74,20 @@ def load_stdout_payload(proc: subprocess.CompletedProcess[str]) -> dict:
     return json.loads(proc.stdout)
 
 
-def create_root_run(milestone: str, *, workflow_id: str = "build", project_profile: str = "default") -> dict:
+def create_root_run(
+    milestone: str,
+    *,
+    workflow_id: str = "build",
+    project_profile: str = "default",
+    priority_class: str = "interactive",
+    sqlite_db: Path | None = None,
+) -> dict:
+    target_db = sqlite_db or db_path
     return load_stdout_payload(
         run_command(
             create_run_script,
             "--sqlite-db",
-            db_path,
+            target_db,
             "--project-key",
             "sample-project",
             "--project-profile",
@@ -85,6 +96,8 @@ def create_root_run(milestone: str, *, workflow_id: str = "build", project_profi
             workflow_id,
             "--milestone",
             milestone,
+            "--priority-class",
+            priority_class,
             "--json",
         )
     )["run_details"]
@@ -145,6 +158,72 @@ def list_flow(flow_id: str) -> dict:
             "--json",
         )
     )
+
+
+def claim_next(sqlite_db: Path, *, now: str | None = None) -> dict | None:
+    args: list[object] = [
+        claim_next_script,
+        "--sqlite-db",
+        sqlite_db,
+        "--json",
+    ]
+    if now is not None:
+        args.extend(["--now", now])
+    payload = load_stdout_payload(run_command(*args))
+    return payload["claim"]
+
+
+def release_claim(
+    sqlite_db: Path,
+    *,
+    run_id: str | None = None,
+    queue_item_id: str | None = None,
+    available_at: str | None = None,
+    note: str | None = None,
+) -> dict:
+    args: list[object] = [
+        release_claimed_script,
+        "--sqlite-db",
+        sqlite_db,
+        "--json",
+    ]
+    if run_id is not None:
+        args.extend(["--run-id", run_id])
+    if queue_item_id is not None:
+        args.extend(["--queue-item-id", queue_item_id])
+    if available_at is not None:
+        args.extend(["--available-at", available_at])
+    if note is not None:
+        args.extend(["--note", note])
+    return load_stdout_payload(run_command(*args))["release"]
+
+
+def dispatch_fail_claim(
+    sqlite_db: Path,
+    *,
+    run_id: str | None = None,
+    queue_item_id: str | None = None,
+    reason_code: str,
+    available_at: str | None = None,
+    note: str | None = None,
+) -> dict:
+    args: list[object] = [
+        mark_dispatch_failed_script,
+        "--sqlite-db",
+        sqlite_db,
+        "--reason-code",
+        reason_code,
+        "--json",
+    ]
+    if run_id is not None:
+        args.extend(["--run-id", run_id])
+    if queue_item_id is not None:
+        args.extend(["--queue-item-id", queue_item_id])
+    if available_at is not None:
+        args.extend(["--available-at", available_at])
+    if note is not None:
+        args.extend(["--note", note])
+    return load_stdout_payload(run_command(*args))["dispatch_failure"]
 
 
 def prepare_run_for_reviewer_outcome(milestone: str, *, reviewer_terminal_status: str = "succeeded") -> tuple[dict, dict]:
@@ -735,6 +814,211 @@ with tempfile.TemporaryDirectory() as tmp_dir:
         }
     assert expected_tables.issubset(actual_tables), actual_tables
 
+    scheduler_db_path = tmp_root / "scheduler-control-plane-v2.sqlite"
+    run_command(sqlite_script, scheduler_db_path, "--json")
+    run_command(
+        register_script,
+        "sample-project",
+        "--projects-root",
+        control_dir / "projects",
+        "--sqlite-db",
+        scheduler_db_path,
+        "--json",
+    )
+
+    background_run = create_root_run(
+        "scheduler-background",
+        priority_class="background",
+        sqlite_db=scheduler_db_path,
+    )["run"]
+    system_run = create_root_run(
+        "scheduler-system",
+        priority_class="system",
+        sqlite_db=scheduler_db_path,
+    )["run"]
+    interactive_a_run = create_root_run(
+        "scheduler-interactive-a",
+        priority_class="interactive",
+        sqlite_db=scheduler_db_path,
+    )["run"]
+    interactive_b_run = create_root_run(
+        "scheduler-interactive-b",
+        priority_class="interactive",
+        sqlite_db=scheduler_db_path,
+    )["run"]
+    future_system_run = create_root_run(
+        "scheduler-system-future",
+        priority_class="system",
+        sqlite_db=scheduler_db_path,
+    )["run"]
+
+    background_timestamp = "2026-01-01T00:00:00.000000Z"
+    interactive_timestamp = "2026-01-02T00:00:00.000000Z"
+    system_timestamp = "2026-01-03T00:00:00.000000Z"
+    future_timestamp = "2030-01-01T00:00:00.000000Z"
+    released_future_timestamp = "2030-01-02T00:00:00.000000Z"
+    dispatch_retry_timestamp = "2026-01-02T00:00:00.000000Z"
+
+    with sqlite3.connect(scheduler_db_path) as conn:
+        conn.execute(
+            "UPDATE queue_items SET enqueued_at = ?, available_at = ? WHERE run_id = ?",
+            (background_timestamp, background_timestamp, background_run["id"]),
+        )
+        conn.execute(
+            "UPDATE queue_items SET enqueued_at = ?, available_at = ? WHERE run_id = ?",
+            (system_timestamp, system_timestamp, system_run["id"]),
+        )
+        conn.execute(
+            "UPDATE queue_items SET enqueued_at = ?, available_at = ? WHERE run_id = ?",
+            (interactive_timestamp, interactive_timestamp, interactive_a_run["id"]),
+        )
+        conn.execute(
+            "UPDATE queue_items SET enqueued_at = ?, available_at = ? WHERE run_id = ?",
+            (interactive_timestamp, interactive_timestamp, interactive_b_run["id"]),
+        )
+        conn.execute(
+            "UPDATE queue_items SET enqueued_at = ?, available_at = ? WHERE run_id = ?",
+            (future_timestamp, future_timestamp, future_system_run["id"]),
+        )
+        conn.commit()
+
+    expected_interactive_order = sorted(
+        [
+            interactive_a_run["queue_item"]["id"],
+            interactive_b_run["queue_item"]["id"],
+        ]
+    )
+
+    claim_one = claim_next(scheduler_db_path, now="2026-01-04T00:00:00.000000Z")
+    assert claim_one is not None
+    assert claim_one["dispatch_run"]["run"]["id"] == system_run["id"], claim_one
+    assert claim_one["dispatch_run"]["queue_item"]["priority_class"] == "system", claim_one
+    assert claim_one["dispatch_run"]["project"]["project_key"] == "sample-project", claim_one
+    assert claim_one["dispatch_run"]["project_package_root"] == str(sample_project), claim_one
+    assert claim_one["dispatch_run"]["flow_context"]["cycle_no"] == 1, claim_one
+    assert claim_one["transition"]["transition_type"] == "queue_item_claimed_for_dispatch", claim_one
+
+    claim_two = claim_next(scheduler_db_path, now="2026-01-04T00:00:01.000000Z")
+    assert claim_two is not None
+    assert claim_two["dispatch_run"]["queue_item"]["id"] != claim_one["dispatch_run"]["queue_item"]["id"], (
+        claim_one,
+        claim_two,
+    )
+    assert claim_two["dispatch_run"]["queue_item"]["priority_class"] == "interactive", claim_two
+    assert claim_two["dispatch_run"]["queue_item"]["id"] == expected_interactive_order[0], claim_two
+
+    claim_three = claim_next(scheduler_db_path, now="2026-01-04T00:00:02.000000Z")
+    assert claim_three is not None
+    assert claim_three["dispatch_run"]["queue_item"]["priority_class"] == "interactive", claim_three
+    assert claim_three["dispatch_run"]["queue_item"]["id"] == expected_interactive_order[1], claim_three
+
+    release_result = release_claim(
+        scheduler_db_path,
+        run_id=claim_one["dispatch_run"]["run"]["id"],
+        available_at=released_future_timestamp,
+        note="dispatch never started",
+    )
+    assert release_result["dispatch_run"]["run"]["id"] == system_run["id"], release_result
+    assert release_result["dispatch_run"]["queue_item"]["status"] == "queued", release_result
+    assert release_result["dispatch_run"]["queue_item"]["available_at"] == released_future_timestamp, release_result
+    assert release_result["dispatch_run"]["queue_item"]["claimed_at"] is None, release_result
+    assert release_result["transition"]["transition_type"] == "queue_item_released_to_queue", release_result
+
+    dispatch_failed_result = dispatch_fail_claim(
+        scheduler_db_path,
+        queue_item_id=claim_two["dispatch_run"]["queue_item"]["id"],
+        reason_code="dispatch_failed",
+        available_at=dispatch_retry_timestamp,
+        note="executor stub unavailable",
+    )
+    assert dispatch_failed_result["dispatch_run"]["queue_item"]["status"] == "queued", dispatch_failed_result
+    assert dispatch_failed_result["dispatch_run"]["queue_item"]["available_at"] == dispatch_retry_timestamp, dispatch_failed_result
+    assert dispatch_failed_result["transition"]["transition_type"] == "queue_item_dispatch_failed_requeued", dispatch_failed_result
+    assert dispatch_failed_result["transition"]["reason_code"] == "dispatch_failed", dispatch_failed_result
+
+    claim_four = claim_next(scheduler_db_path, now="2026-01-04T00:00:03.000000Z")
+    assert claim_four is not None
+    assert claim_four["dispatch_run"]["queue_item"]["id"] == claim_two["dispatch_run"]["queue_item"]["id"], claim_four
+
+    claim_five = claim_next(scheduler_db_path, now="2026-01-04T00:00:04.000000Z")
+    assert claim_five is not None
+    assert claim_five["dispatch_run"]["run"]["id"] == background_run["id"], claim_five
+    assert claim_five["dispatch_run"]["queue_item"]["priority_class"] == "background", claim_five
+
+    claim_six = claim_next(scheduler_db_path, now="2026-01-04T00:00:05.000000Z")
+    assert claim_six is None, claim_six
+
+    with sqlite3.connect(scheduler_db_path) as conn:
+        released_queue_row = conn.execute(
+            "SELECT status, available_at, claimed_at FROM queue_items WHERE id = ?",
+            (claim_one["dispatch_run"]["queue_item"]["id"],),
+        ).fetchone()
+        assert released_queue_row == ("queued", released_future_timestamp, None), released_queue_row
+
+        dispatch_transition = conn.execute(
+            """
+            SELECT from_state, to_state, transition_type, reason_code, metadata_json
+            FROM state_transitions
+            WHERE queue_item_id = ? AND transition_type = 'queue_item_dispatch_failed_requeued'
+            ORDER BY created_at DESC, id DESC
+            LIMIT 1
+            """,
+            (claim_two["dispatch_run"]["queue_item"]["id"],),
+        ).fetchone()
+        assert dispatch_transition is not None, claim_two
+        assert dispatch_transition[0:4] == (
+            "claimed",
+            "queued",
+            "queue_item_dispatch_failed_requeued",
+            "dispatch_failed",
+        ), dispatch_transition
+        dispatch_transition_metadata = json.loads(dispatch_transition[4])
+        assert dispatch_transition_metadata["previous_available_at"] == interactive_timestamp, dispatch_transition_metadata
+        assert dispatch_transition_metadata["requeued_available_at"] == dispatch_retry_timestamp, dispatch_transition_metadata
+        assert dispatch_transition_metadata["note"] == "executor stub unavailable", dispatch_transition_metadata
+
+        released_transition = conn.execute(
+            """
+            SELECT from_state, to_state, transition_type, reason_code, metadata_json
+            FROM state_transitions
+            WHERE queue_item_id = ? AND transition_type = 'queue_item_released_to_queue'
+            ORDER BY created_at DESC, id DESC
+            LIMIT 1
+            """,
+            (claim_one["dispatch_run"]["queue_item"]["id"],),
+        ).fetchone()
+        assert released_transition is not None, claim_one
+        assert released_transition[0:4] == (
+            "claimed",
+            "queued",
+            "queue_item_released_to_queue",
+            None,
+        ), released_transition
+        released_transition_metadata = json.loads(released_transition[4])
+        assert released_transition_metadata["previous_available_at"] == system_timestamp, released_transition_metadata
+        assert released_transition_metadata["requeued_available_at"] == released_future_timestamp, released_transition_metadata
+        assert released_transition_metadata["note"] == "dispatch never started", released_transition_metadata
+
+        claim_transition_count = conn.execute(
+            """
+            SELECT COUNT(*)
+            FROM state_transitions
+            WHERE queue_item_id = ?
+              AND transition_type = 'queue_item_claimed_for_dispatch'
+            """,
+            (claim_two["dispatch_run"]["queue_item"]["id"],),
+        ).fetchone()[0]
+        assert claim_transition_count == 2, claim_transition_count
+
+        scheduler_queue_states = conn.execute(
+            """
+            SELECT runs.id, queue_items.priority_class, queue_items.status, queue_items.available_at
+            FROM queue_items
+            JOIN runs ON runs.id = queue_items.run_id
+            ORDER BY runs.created_at, runs.id
+            """
+        ).fetchall()
+
     print(
         json.dumps(
             {
@@ -777,6 +1061,34 @@ with tempfile.TemporaryDirectory() as tmp_dir:
                     for step_run in list_step_runs_payload["step_runs"]
                 ],
                 "sqlite_tables": sorted(actual_tables),
+                "scheduler_claims": {
+                    "claim_order_run_ids": [
+                        claim_one["dispatch_run"]["run"]["id"],
+                        claim_two["dispatch_run"]["run"]["id"],
+                        claim_three["dispatch_run"]["run"]["id"],
+                        claim_four["dispatch_run"]["run"]["id"],
+                        claim_five["dispatch_run"]["run"]["id"],
+                    ],
+                    "claim_order_queue_item_ids": [
+                        claim_one["dispatch_run"]["queue_item"]["id"],
+                        claim_two["dispatch_run"]["queue_item"]["id"],
+                        claim_three["dispatch_run"]["queue_item"]["id"],
+                        claim_four["dispatch_run"]["queue_item"]["id"],
+                        claim_five["dispatch_run"]["queue_item"]["id"],
+                    ],
+                    "expected_interactive_order": expected_interactive_order,
+                    "released_run_id": release_result["dispatch_run"]["run"]["id"],
+                    "dispatch_failed_queue_item_id": dispatch_failed_result["dispatch_run"]["queue_item"]["id"],
+                    "final_queue_states": [
+                        {
+                            "run_id": row[0],
+                            "priority_class": row[1],
+                            "status": row[2],
+                            "available_at": row[3],
+                        }
+                        for row in scheduler_queue_states
+                    ],
+                },
             },
             ensure_ascii=False,
             indent=2,
