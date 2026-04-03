@@ -1,8 +1,8 @@
-# Control Plane v2 Bootstrap, Validation, Registry, Run, Step, Dispatch, Worker, and Manual Control Utilities
+# Control Plane v2 Bootstrap, Validation, SQLite Migrations, Registry, Run, Step, Dispatch, Worker, and Manual Control Utilities
 
 ## Scope
 - This step adds the first executable infrastructure layer for the v2 scaffold only.
-- It provides strict project package validation, SQLite schema bootstrap/init, project registry/import, root run creation/inspection, step_run lifecycle utilities, reviewer outcome/follow-up persistence, provisional scheduler claim/release primitives, a bounded manual dispatch adapter for claimed runs, a bounded single-worker loop v1, and a bounded manual control/recovery layer v1.
+- It provides strict project package validation, SQLite schema bootstrap/init, SQLite migration management, project registry/import, root run creation/inspection, step_run lifecycle utilities, reviewer outcome/follow-up persistence, provisional scheduler claim/release primitives, a bounded manual dispatch adapter for claimed runs, a bounded single-worker loop v1, and a bounded manual control/recovery layer v1.
 - It still does not implement a daemon/service runtime, multi-worker protocol, or auto-continue policy engine.
 
 ## Project package validation
@@ -53,9 +53,53 @@ cd /home/dkar/workspace/control
 ```
 
 Notes:
-- this utility applies the accepted schema SQL as-is
-- it is not a migrations framework
-- the current requirement is only schema bootstrap on an empty SQLite database
+- fresh DB policy is: bootstrap the latest schema snapshot from `schemas/sqlite-v1.sql`, then mark the known migration chain as applied in `schema_migrations`
+- the migration chain remains the source of truth for upgrade history under `schemas/migrations/`
+- `init-sqlite-v1` is still safe on an empty database, but it now records schema version metadata instead of leaving the DB untracked
+
+## SQLite migrations
+
+Show the current SQLite schema version:
+
+```bash
+cd /home/dkar/workspace/control
+./scripts/show-sqlite-schema-version /tmp/control-plane-v2.sqlite --json
+```
+
+List the discovered migration chain:
+
+```bash
+cd /home/dkar/workspace/control
+./scripts/list-sqlite-migrations --json
+```
+
+Migrate an existing SQLite database in place:
+
+```bash
+cd /home/dkar/workspace/control
+./scripts/migrate-sqlite-v1 /tmp/control-plane-v2.sqlite --json
+```
+
+SQLite migration behavior in this step:
+- migration metadata is stored in `schema_migrations(version, name, applied_at)`
+- the engine discovers ordered SQL files from `schemas/migrations/`
+- migrations are required to form a contiguous non-branching chain such as `0001`, `0002`, `0003`
+- migrate is idempotent; already-current DBs do not reapply migrations
+- for recognized legacy untracked DBs, the engine backfills migration metadata first and then applies only the missing ordered SQL migrations
+- current legacy detection distinguishes:
+  - empty DB
+  - legacy untracked v1 baseline schema
+  - legacy untracked v2 schema that already includes manual-control `paused` state but lacks `schema_migrations`
+- invalid or partial migration history fails closed with an explicit error instead of silently guessing
+
+Current migration chain:
+- `0001_baseline.sql`: original pre-manual-control schema
+- `0002_manual_control_paused.sql`: upgrades run and queue status constraints for paused-state support
+
+What is not supported in this step:
+- downgrades
+- branching migration histories
+- non-SQLite backends
 
 ## Project registry/import
 
@@ -618,6 +662,21 @@ The manual-control smoke verifies:
 - reviewer `changes_requested` past cycle `3` stops the current run cleanly
 - `list-flow-runs` returns the ordered flow chain
 - scheduler claim returns the highest-priority eligible run
+
+Run the focused SQLite migration smoke:
+
+```bash
+cd /home/dkar/workspace/control
+./scripts/smoke-control-plane-v2-sqlite-migrations.sh
+```
+
+The migration smoke verifies:
+- fresh DB init -> schema version metadata is recorded correctly
+- old DB at earlier schema -> migrate upgrades successfully without re-init
+- second migrate run is idempotent
+- migrated DB supports manual-control `paused` state
+- migrated DB still passes a bounded worker executor -> reviewer -> approved path
+- invalid/partial migration metadata state fails explicitly
 - same-class scheduler ordering is stable and deterministic
 - claimed runs can be released back to `queued`
 - dispatch-failed requeues the claimed run and writes append-only transitions with reason metadata

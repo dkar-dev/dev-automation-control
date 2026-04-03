@@ -55,6 +55,12 @@ from .step_run_persistence import (
     start_step_run,
 )
 from .sqlite_bootstrap import initialize_sqlite_v1
+from .sqlite_migrations import (
+    SQLiteMigrationError,
+    get_sqlite_schema_version,
+    list_sqlite_migrations,
+    migrate_sqlite_v1,
+)
 from .dispatch_adapter import (
     DISPATCH_PAYLOAD_INVALID,
     DispatchAdapterError,
@@ -71,6 +77,7 @@ from .worker_loop import (
 CONTROL_DIR = Path(__file__).resolve().parents[1]
 DEFAULT_PROJECTS_ROOT = CONTROL_DIR / "projects"
 DEFAULT_SQLITE_SCHEMA = CONTROL_DIR / "schemas" / "sqlite-v1.sql"
+DEFAULT_SQLITE_MIGRATIONS = CONTROL_DIR / "schemas" / "migrations"
 
 
 def main_validate_project_package(argv: list[str] | None = None) -> int:
@@ -121,18 +128,151 @@ def main_init_sqlite_v1(argv: list[str] | None = None) -> int:
         default=str(DEFAULT_SQLITE_SCHEMA),
         help=f"Schema SQL file to apply (default: {DEFAULT_SQLITE_SCHEMA})",
     )
+    parser.add_argument(
+        "--migrations-root",
+        default=str(DEFAULT_SQLITE_MIGRATIONS),
+        help=f"SQLite migrations directory (default: {DEFAULT_SQLITE_MIGRATIONS})",
+    )
     parser.add_argument("--json", action="store_true", help="Print machine-readable JSON output")
     args = parser.parse_args(argv)
 
-    result = initialize_sqlite_v1(args.database_path, args.schema)
+    try:
+        result = initialize_sqlite_v1(args.database_path, args.schema, args.migrations_root)
+    except SQLiteMigrationError as exc:
+        payload = {"ok": False, "stage": "sqlite_migrations", "error": exc.to_dict()}
+        if args.json:
+            print(json.dumps(payload, ensure_ascii=False, indent=2), file=sys.stderr)
+        else:
+            print(f"SQLite init failed: {exc.message}", file=sys.stderr)
+            if exc.details:
+                print(f"Details: {exc.details}", file=sys.stderr)
+        return 1
     payload = {"ok": True, "database": result.to_dict()}
 
     if args.json:
         print(json.dumps(payload, ensure_ascii=False, indent=2))
     else:
-        print(f"SQLite schema initialized: {result.database_path}")
+        print(f"SQLite schema ready: {result.database_path}")
         print(f"Schema file: {result.schema_path}")
+        print(f"Migrations root: {result.migrations_root}")
+        print(f"Operation: {result.operation}")
+        print(f"Current version: {result.current_version:04d} ({result.current_name})")
         print("Tables: " + ", ".join(result.tables))
+    return 0
+
+
+def main_migrate_sqlite_v1(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(description="Migrate an existing SQLite database to the latest Control Plane v2 schema.")
+    parser.add_argument("database_path", help="SQLite database file to migrate")
+    parser.add_argument(
+        "--schema",
+        default=str(DEFAULT_SQLITE_SCHEMA),
+        help=f"Latest schema snapshot used for fresh bootstrap policy (default: {DEFAULT_SQLITE_SCHEMA})",
+    )
+    parser.add_argument(
+        "--migrations-root",
+        default=str(DEFAULT_SQLITE_MIGRATIONS),
+        help=f"SQLite migrations directory (default: {DEFAULT_SQLITE_MIGRATIONS})",
+    )
+    parser.add_argument("--json", action="store_true", help="Print machine-readable JSON output")
+    args = parser.parse_args(argv)
+
+    try:
+        result = migrate_sqlite_v1(args.database_path, schema_path=args.schema, migrations_root=args.migrations_root)
+    except SQLiteMigrationError as exc:
+        payload = {"ok": False, "stage": "sqlite_migrations", "error": exc.to_dict()}
+        if args.json:
+            print(json.dumps(payload, ensure_ascii=False, indent=2), file=sys.stderr)
+        else:
+            print(f"SQLite migrate failed: {exc.message}", file=sys.stderr)
+            if exc.details:
+                print(f"Details: {exc.details}", file=sys.stderr)
+        return 1
+
+    payload = {"ok": True, "migration": result.to_dict()}
+    if args.json:
+        print(json.dumps(payload, ensure_ascii=False, indent=2))
+    else:
+        print(f"SQLite schema ready: {result.database_path}")
+        print(f"Operation: {result.operation}")
+        print(f"Version: {result.version_before:04d} -> {result.version_after:04d}")
+        print("Recorded migrations: " + ", ".join(migration.version_label for migration in result.recorded_migrations) if result.recorded_migrations else "Recorded migrations: none")
+        print("Executed migrations: " + ", ".join(migration.version_label for migration in result.executed_migrations) if result.executed_migrations else "Executed migrations: none")
+    return 0
+
+
+def main_show_sqlite_schema_version(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(description="Show the current SQLite schema version for Control Plane v2.")
+    parser.add_argument("database_path", help="SQLite database file to inspect")
+    parser.add_argument(
+        "--migrations-root",
+        default=str(DEFAULT_SQLITE_MIGRATIONS),
+        help=f"SQLite migrations directory (default: {DEFAULT_SQLITE_MIGRATIONS})",
+    )
+    parser.add_argument("--json", action="store_true", help="Print machine-readable JSON output")
+    args = parser.parse_args(argv)
+
+    try:
+        result = get_sqlite_schema_version(args.database_path, migrations_root=args.migrations_root)
+    except SQLiteMigrationError as exc:
+        payload = {"ok": False, "stage": "sqlite_migrations", "error": exc.to_dict()}
+        if args.json:
+            print(json.dumps(payload, ensure_ascii=False, indent=2), file=sys.stderr)
+        else:
+            print(f"SQLite schema version lookup failed: {exc.message}", file=sys.stderr)
+            if exc.details:
+                print(f"Details: {exc.details}", file=sys.stderr)
+        return 1
+
+    payload = {"ok": True, "schema_version": result.to_dict()}
+    if args.json:
+        print(json.dumps(payload, ensure_ascii=False, indent=2))
+    else:
+        tracking = "tracked" if result.tracked else "untracked"
+        print(f"SQLite schema: {result.database_path}")
+        print(f"State: {result.detected_state} ({tracking})")
+        print(f"Current version: {result.current_version:04d} ({result.current_name})")
+        print(f"Latest version: {result.latest_version:04d} ({result.latest_name})")
+        print(
+            "Pending migrations: "
+            + (", ".join(migration.version_label for migration in result.pending_migrations) if result.pending_migrations else "none")
+        )
+    return 0
+
+
+def main_list_sqlite_migrations(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(description="List discovered Control Plane v2 SQLite migrations.")
+    parser.add_argument(
+        "--migrations-root",
+        default=str(DEFAULT_SQLITE_MIGRATIONS),
+        help=f"SQLite migrations directory (default: {DEFAULT_SQLITE_MIGRATIONS})",
+    )
+    parser.add_argument("--json", action="store_true", help="Print machine-readable JSON output")
+    args = parser.parse_args(argv)
+
+    try:
+        migrations = list_sqlite_migrations(args.migrations_root)
+    except SQLiteMigrationError as exc:
+        payload = {"ok": False, "stage": "sqlite_migrations", "error": exc.to_dict()}
+        if args.json:
+            print(json.dumps(payload, ensure_ascii=False, indent=2), file=sys.stderr)
+        else:
+            print(f"SQLite migration discovery failed: {exc.message}", file=sys.stderr)
+            if exc.details:
+                print(f"Details: {exc.details}", file=sys.stderr)
+        return 1
+
+    payload = {
+        "ok": True,
+        "migrations_root": str(Path(args.migrations_root).expanduser().resolve()),
+        "migrations": [migration.to_dict() for migration in migrations],
+    }
+    if args.json:
+        print(json.dumps(payload, ensure_ascii=False, indent=2))
+    else:
+        print(f"SQLite migrations: {payload['migrations_root']}")
+        for migration in migrations:
+            print(f"- {migration.version_label} {migration.name}: {migration.path}")
     return 0
 
 
@@ -1440,6 +1580,15 @@ def main() -> int:
     sqlite_parser = subparsers.add_parser("init-sqlite-v1")
     sqlite_parser.add_argument("args", nargs=argparse.REMAINDER)
 
+    migrate_sqlite_parser = subparsers.add_parser("migrate-sqlite-v1")
+    migrate_sqlite_parser.add_argument("args", nargs=argparse.REMAINDER)
+
+    show_sqlite_version_parser = subparsers.add_parser("show-sqlite-schema-version")
+    show_sqlite_version_parser.add_argument("args", nargs=argparse.REMAINDER)
+
+    list_sqlite_migrations_parser = subparsers.add_parser("list-sqlite-migrations")
+    list_sqlite_migrations_parser.add_argument("args", nargs=argparse.REMAINDER)
+
     register_parser = subparsers.add_parser("register-project-package")
     register_parser.add_argument("args", nargs=argparse.REMAINDER)
 
@@ -1527,6 +1676,12 @@ def main() -> int:
         return main_validate_project_package(args.args)
     if args.command == "init-sqlite-v1":
         return main_init_sqlite_v1(args.args)
+    if args.command == "migrate-sqlite-v1":
+        return main_migrate_sqlite_v1(args.args)
+    if args.command == "show-sqlite-schema-version":
+        return main_show_sqlite_schema_version(args.args)
+    if args.command == "list-sqlite-migrations":
+        return main_list_sqlite_migrations(args.args)
     if args.command == "register-project-package":
         return main_register_project_package(args.args)
     if args.command == "list-registered-projects":

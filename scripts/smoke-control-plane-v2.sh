@@ -727,12 +727,24 @@ with tempfile.TemporaryDirectory() as tmp_dir:
 
         changes_flow_rows = conn.execute(
             """
-            SELECT id, parent_run_id, origin_type, origin_run_id, origin_step_run_id, status
-            FROM runs
-            WHERE flow_id = ?
-            ORDER BY created_at, id
+            WITH RECURSIVE flow_chain (cycle_no, run_id) AS (
+              SELECT 1 AS cycle_no, runs.id AS run_id
+              FROM runs
+              WHERE runs.flow_id = ? AND runs.parent_run_id IS NULL
+
+              UNION ALL
+
+              SELECT flow_chain.cycle_no + 1, child.id
+              FROM runs AS child
+              JOIN flow_chain ON child.parent_run_id = flow_chain.run_id
+              WHERE child.flow_id = ?
+            )
+            SELECT runs.id, runs.parent_run_id, runs.origin_type, runs.origin_run_id, runs.origin_step_run_id, runs.status
+            FROM flow_chain
+            JOIN runs ON runs.id = flow_chain.run_id
+            ORDER BY flow_chain.cycle_no, runs.created_at, runs.id
             """,
-            (changes_root_run["flow_id"],),
+            (changes_root_run["flow_id"], changes_root_run["flow_id"]),
         ).fetchall()
         assert [(row[0], row[1], row[2], row[3], row[4], row[5]) for row in changes_flow_rows] == [
             (changes_root_run["id"], None, "root_manual", None, None, "completed"),

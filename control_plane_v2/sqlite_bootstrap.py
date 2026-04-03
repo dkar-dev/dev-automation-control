@@ -2,51 +2,56 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
-import sqlite3
+
+from .sqlite_migrations import MIGRATION_BASELINE_POLICY, SQLiteMigrationApplyResult, migrate_sqlite_v1
 
 
 @dataclass(frozen=True)
 class SQLiteBootstrapResult:
     database_path: Path
     schema_path: Path
+    migrations_root: Path
     tables: tuple[str, ...]
+    current_version: int
+    current_name: str | None
+    operation: str
+    baseline_policy: str
 
     def to_dict(self) -> dict[str, object]:
         return {
             "database_path": str(self.database_path),
             "schema_path": str(self.schema_path),
+            "migrations_root": str(self.migrations_root),
             "tables": list(self.tables),
+            "current_version": self.current_version,
+            "current_version_label": f"{self.current_version:04d}",
+            "current_name": self.current_name,
+            "operation": self.operation,
+            "baseline_policy": self.baseline_policy,
         }
 
 
-def initialize_sqlite_v1(database_path: str | Path, schema_path: str | Path) -> SQLiteBootstrapResult:
-    resolved_db_path = Path(database_path).expanduser().resolve()
-    resolved_schema_path = Path(schema_path).expanduser().resolve()
+def initialize_sqlite_v1(
+    database_path: str | Path,
+    schema_path: str | Path,
+    migrations_root: str | Path,
+) -> SQLiteBootstrapResult:
+    migration_result = migrate_sqlite_v1(
+        database_path,
+        schema_path=schema_path,
+        migrations_root=migrations_root,
+    )
+    return _bootstrap_result_from_migration(migration_result)
 
-    schema_sql = resolved_schema_path.read_text(encoding="utf-8")
-    resolved_db_path.parent.mkdir(parents=True, exist_ok=True)
 
-    connection = sqlite3.connect(resolved_db_path)
-    try:
-        connection.execute("PRAGMA foreign_keys = ON;")
-        connection.executescript(schema_sql)
-        connection.commit()
-        tables = tuple(
-            row[0]
-            for row in connection.execute(
-                """
-                SELECT name
-                FROM sqlite_master
-                WHERE type = 'table' AND name NOT LIKE 'sqlite_%'
-                ORDER BY name
-                """
-            )
-        )
-    finally:
-        connection.close()
-
+def _bootstrap_result_from_migration(result: SQLiteMigrationApplyResult) -> SQLiteBootstrapResult:
     return SQLiteBootstrapResult(
-        database_path=resolved_db_path,
-        schema_path=resolved_schema_path,
-        tables=tables,
+        database_path=result.database_path,
+        schema_path=result.schema_path,
+        migrations_root=result.migrations_root,
+        tables=result.tables,
+        current_version=result.schema_version.current_version,
+        current_name=result.schema_version.current_name,
+        operation=result.operation,
+        baseline_policy=MIGRATION_BASELINE_POLICY,
     )

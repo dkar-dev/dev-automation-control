@@ -1,9 +1,3 @@
-CREATE TABLE IF NOT EXISTS schema_migrations (
-  version INTEGER PRIMARY KEY CHECK (version >= 1),
-  name TEXT NOT NULL,
-  applied_at TEXT NOT NULL
-);
-
 CREATE TABLE IF NOT EXISTS projects (
   id TEXT PRIMARY KEY,
   project_key TEXT NOT NULL UNIQUE,
@@ -24,7 +18,7 @@ CREATE TABLE IF NOT EXISTS runs (
   origin_run_id TEXT REFERENCES runs(id) ON DELETE RESTRICT,
   origin_step_run_id TEXT REFERENCES step_runs(id) ON DELETE RESTRICT,
   status TEXT NOT NULL CHECK (
-    status IN ('queued', 'running', 'paused', 'completed', 'failed', 'stopped', 'cancelled')
+    status IN ('queued', 'running', 'completed', 'failed', 'stopped', 'cancelled')
   ),
   created_at TEXT NOT NULL,
   updated_at TEXT NOT NULL,
@@ -86,7 +80,7 @@ CREATE TABLE IF NOT EXISTS queue_items (
     priority_class IN ('system', 'interactive', 'background')
   ),
   status TEXT NOT NULL CHECK (
-    status IN ('queued', 'claimed', 'paused', 'completed', 'cancelled')
+    status IN ('queued', 'claimed', 'completed', 'cancelled')
   ),
   enqueued_at TEXT NOT NULL,
   available_at TEXT NOT NULL,

@@ -513,7 +513,7 @@ def _resolve_database_path(database_path: str | Path) -> Path:
             code=RUN_STORAGE_ERROR,
             message=f"SQLite database does not exist: {resolved_db_path}",
             database_path=resolved_db_path,
-            details="Run init-sqlite-v1 before creating or reading runs.",
+            details="Run init-sqlite-v1 or migrate-sqlite-v1 before creating or reading runs.",
         )
     if not resolved_db_path.is_file():
         raise RunPersistenceError(
@@ -550,7 +550,7 @@ def _ensure_required_tables(
             code=REQUIRED_TABLES_MISSING,
             message=f"SQLite database is missing required tables: {', '.join(missing_tables)}",
             database_path=database_path,
-            details="Run init-sqlite-v1 before using run persistence utilities.",
+            details="Run init-sqlite-v1 or migrate-sqlite-v1 before using run persistence utilities.",
         )
 
 

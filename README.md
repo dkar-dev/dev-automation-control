@@ -10,10 +10,14 @@ This repo is the control plane for orchestration between ChatGPT Web, n8n, Playw
   - `schemas/`
   - `examples/`
 - The v2 scaffold now includes storage/persistence utilities, scheduler claim primitives, a bounded manual dispatch adapter, and a bounded single-worker loop v1 for one Linux host process.
+- The v2 scaffold now also includes a lightweight SQLite migration path, so schema evolution no longer requires re-initializing the database for every accepted change.
 - Migration from legacy pipeline to v2 is not completed yet.
 - The first executable v2 utilities now live in:
   - `scripts/validate-project-package`
   - `scripts/init-sqlite-v1`
+  - `scripts/migrate-sqlite-v1`
+  - `scripts/show-sqlite-schema-version`
+  - `scripts/list-sqlite-migrations`
   - `scripts/register-project-package`
   - `scripts/list-registered-projects`
   - `scripts/create-root-run`
@@ -42,6 +46,7 @@ This repo is the control plane for orchestration between ChatGPT Web, n8n, Playw
   - `scripts/rerun-run-step`
   - `scripts/show-run-control-state`
   - `scripts/smoke-control-plane-v2.sh`
+  - `scripts/smoke-control-plane-v2-sqlite-migrations.sh`
   - `scripts/smoke-control-plane-v2-dispatch.sh`
   - `scripts/smoke-control-plane-v2-worker.sh`
   - `scripts/smoke-control-plane-v2-manual-control.sh`
@@ -218,6 +223,29 @@ overlays/<name>/reviewer.md
   ./scripts/smoke-control-plane-v2-dispatch.sh
   ```
 - This smoke uses the real v2 dispatch adapter plus the real legacy executor/reviewer backend scripts, injects a fake `codex`, verifies executor/reviewer `step_run` lifecycle persistence, artifact refs/logs/manifests, approved/blocked/changes_requested ingestion outcomes, malformed reviewer verdict failure, manual override recovery, and the dispatch-failed requeue path for a broken backend launch.
+
+## SQLite Migration Smoke Test
+- Run the focused SQLite migration smoke:
+  ```bash
+  cd /home/dkar/workspace/control
+  ./scripts/smoke-control-plane-v2-sqlite-migrations.sh
+  ```
+- This smoke verifies:
+  - fresh `init-sqlite-v1` bootstraps the latest schema snapshot and records the current migration chain
+  - an old untracked v1 database upgrades in place through `migrate-sqlite-v1`
+  - a second migrate run is idempotent
+  - manual-control `paused` state works after migrate
+  - the single-worker path still completes on the migrated database
+  - invalid migration metadata state fails explicitly
+
+## SQLite Migration Policy
+- Fresh DB policy: `init-sqlite-v1` bootstraps the latest snapshot in [`schemas/sqlite-v1.sql`](/home/dkar/workspace/control/schemas/sqlite-v1.sql), then marks all known migrations as applied in `schema_migrations`.
+- Existing DB policy: `migrate-sqlite-v1` inspects the current SQLite layout, backfills missing migration metadata for recognized legacy schemas, and then applies only the remaining ordered SQL migrations under [`schemas/migrations/`](/home/dkar/workspace/control/schemas/migrations).
+- Current drift coverage includes the `paused` run/queue state introduced by manual control.
+- Unsupported in v1:
+  - downgrades
+  - branching migration histories
+  - non-SQLite backends
 
 ## Worker Loop Smoke Test
 - Run the focused v2 single-worker smoke:

@@ -153,7 +153,7 @@ def _resolve_database_path(database_path: str | Path) -> Path:
             code=PROJECT_REGISTRY_STORAGE_ERROR,
             message=f"SQLite database does not exist: {resolved_db_path}",
             database_path=resolved_db_path,
-            details="Run init-sqlite-v1 before registering projects.",
+            details="Run init-sqlite-v1 or migrate-sqlite-v1 before registering projects.",
         )
     if not resolved_db_path.is_file():
         raise ProjectRegistryError(
@@ -184,7 +184,7 @@ def _ensure_projects_table(connection: sqlite3.Connection, database_path: Path) 
             code=PROJECTS_TABLE_MISSING,
             message=f"SQLite database is missing the projects registry table: {database_path}",
             database_path=database_path,
-            details="Run init-sqlite-v1 before registering projects.",
+            details="Run init-sqlite-v1 or migrate-sqlite-v1 before registering projects.",
         )
 
 

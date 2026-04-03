@@ -440,7 +440,7 @@ def _resolve_database_path(database_path: str | Path) -> Path:
             code=SCHEDULER_STORAGE_ERROR,
             message=f"SQLite database does not exist: {resolved_db_path}",
             database_path=resolved_db_path,
-            details="Run init-sqlite-v1 before using scheduler persistence utilities.",
+            details="Run init-sqlite-v1 or migrate-sqlite-v1 before using scheduler persistence utilities.",
         )
     if not resolved_db_path.is_file():
         raise SchedulerPersistenceError(
@@ -478,7 +478,7 @@ def _ensure_required_tables(
             code=REQUIRED_TABLES_MISSING,
             message=f"SQLite database is missing required tables: {', '.join(missing_tables)}",
             database_path=database_path,
-            details="Run init-sqlite-v1 before using scheduler persistence utilities.",
+            details="Run init-sqlite-v1 or migrate-sqlite-v1 before using scheduler persistence utilities.",
         )
 
 
