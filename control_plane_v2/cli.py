@@ -17,6 +17,12 @@ from .run_persistence import (
     get_run,
     list_runs,
 )
+from .reviewer_outcome_persistence import (
+    REVIEWER_VERDICTS,
+    ReviewerOutcomeError,
+    complete_reviewer_outcome,
+    list_flow_runs,
+)
 from .step_run_persistence import (
     STEP_KEYS,
     STEP_RUN_TERMINAL_STATUSES,
@@ -580,6 +586,93 @@ def main_show_step_run(argv: list[str] | None = None) -> int:
     return 0
 
 
+def main_complete_reviewer_outcome(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(description="Complete a terminal reviewer step_run with a semantic verdict.")
+    parser.add_argument("--sqlite-db", required=True, help="SQLite database path bootstrapped with init-sqlite-v1")
+    parser.add_argument("step_run_id", help="Terminal reviewer step_run identifier")
+    parser.add_argument("--verdict", required=True, choices=REVIEWER_VERDICTS, help="Reviewer verdict")
+    parser.add_argument("--summary", help="Optional short reviewer outcome summary or reason text")
+    parser.add_argument("--json", action="store_true", help="Print machine-readable JSON output")
+    args = parser.parse_args(argv)
+
+    try:
+        result = complete_reviewer_outcome(args.sqlite_db, args.step_run_id, args.verdict, summary_text=args.summary)
+    except ReviewerOutcomeError as exc:
+        payload = {
+            "ok": False,
+            "stage": "reviewer_outcome_persistence",
+            "error": exc.to_dict(),
+        }
+        if args.json:
+            print(json.dumps(payload, ensure_ascii=False, indent=2), file=sys.stderr)
+        else:
+            print(f"Failed to complete reviewer outcome: {exc.message}", file=sys.stderr)
+            if exc.details:
+                print(f"Details: {exc.details}", file=sys.stderr)
+        return 1
+
+    payload = {
+        "ok": True,
+        "sqlite_db": str(Path(args.sqlite_db).expanduser().resolve()),
+        "reviewer_outcome": result.to_dict(),
+    }
+    if args.json:
+        print(json.dumps(payload, ensure_ascii=False, indent=2))
+    else:
+        print(f"Reviewer outcome completed: {result.verdict}")
+        print(f"Current run: {result.current_run.run.id} ({result.current_run.run.status})")
+        if result.follow_up_run is not None:
+            print(f"Follow-up run: {result.follow_up_run.run.id} ({result.follow_up_run.run.status})")
+        else:
+            print("Follow-up run: none")
+        print(f"Flow: {result.flow_summary.flow_id} | total_runs={result.flow_summary.total_runs}")
+    return 0
+
+
+def main_list_flow_runs(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(description="List all runs inside one flow_id chain.")
+    parser.add_argument("--sqlite-db", required=True, help="SQLite database path bootstrapped with init-sqlite-v1")
+    parser.add_argument("flow_id", help="Flow identifier")
+    parser.add_argument("--limit", type=int, default=100, help="Maximum number of rows to return")
+    parser.add_argument("--json", action="store_true", help="Print machine-readable JSON output")
+    args = parser.parse_args(argv)
+
+    try:
+        flow_runs = list_flow_runs(args.sqlite_db, args.flow_id, limit=args.limit)
+    except ReviewerOutcomeError as exc:
+        payload = {
+            "ok": False,
+            "error": exc.to_dict(),
+        }
+        if args.json:
+            print(json.dumps(payload, ensure_ascii=False, indent=2), file=sys.stderr)
+        else:
+            print(f"Failed to list flow runs: {exc.message}", file=sys.stderr)
+            if exc.details:
+                print(f"Details: {exc.details}", file=sys.stderr)
+        return 1
+
+    payload = {
+        "ok": True,
+        "sqlite_db": str(Path(args.sqlite_db).expanduser().resolve()),
+        "flow_id": args.flow_id,
+        "flow_runs": [flow_run.to_dict() for flow_run in flow_runs],
+    }
+    if args.json:
+        print(json.dumps(payload, ensure_ascii=False, indent=2))
+    else:
+        print(f"Flow runs: {len(flow_runs)}")
+        for flow_run in flow_runs:
+            queue_suffix = ""
+            if flow_run.run.queue_item is not None:
+                queue_suffix = f" | queue={flow_run.run.queue_item.priority_class}/{flow_run.run.queue_item.status}"
+            print(
+                f"- cycle={flow_run.cycle_no} | {flow_run.run.id} | status={flow_run.run.status} "
+                f"| origin={flow_run.run.origin_type}{queue_suffix}"
+            )
+    return 0
+
+
 def _format_validation_error(error: object) -> str:
     error_dict = error.to_dict()
     location = error_dict["file_path"] or error_dict["package_root"]
@@ -628,6 +721,12 @@ def main() -> int:
     show_step_parser = subparsers.add_parser("show-step-run")
     show_step_parser.add_argument("args", nargs=argparse.REMAINDER)
 
+    complete_reviewer_parser = subparsers.add_parser("complete-reviewer-outcome")
+    complete_reviewer_parser.add_argument("args", nargs=argparse.REMAINDER)
+
+    list_flow_parser = subparsers.add_parser("list-flow-runs")
+    list_flow_parser.add_argument("args", nargs=argparse.REMAINDER)
+
     args = parser.parse_args()
 
     if args.command == "validate-project-package":
@@ -654,6 +753,10 @@ def main() -> int:
         return main_list_step_runs(args.args)
     if args.command == "show-step-run":
         return main_show_step_run(args.args)
+    if args.command == "complete-reviewer-outcome":
+        return main_complete_reviewer_outcome(args.args)
+    if args.command == "list-flow-runs":
+        return main_list_flow_runs(args.args)
 
     print(f"Unknown command: {args.command}", file=sys.stderr)
     return 1

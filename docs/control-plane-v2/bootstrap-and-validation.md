@@ -2,8 +2,8 @@
 
 ## Scope
 - This step adds the first executable infrastructure layer for the v2 scaffold only.
-- It provides strict project package validation, SQLite schema bootstrap/init, project registry/import, root run creation/inspection, and step_run lifecycle utilities.
-- It does not implement scheduler behavior, worker/runtime execution, or follow-up automation.
+- It provides strict project package validation, SQLite schema bootstrap/init, project registry/import, root run creation/inspection, step_run lifecycle utilities, and reviewer outcome/follow-up persistence.
+- It does not implement scheduler behavior or worker/runtime execution.
 
 ## Project package validation
 
@@ -139,7 +139,7 @@ Root run behavior in this step:
 - a new `flow_id` is created for each root run
 - run scope is immutable at creation time: `project`, `project_profile`, `workflow_id`, `milestone`
 - provisional `origin_type` is currently fixed to `root_manual` for this path only
-- follow-up runs, scheduler claims, and runtime execution are not implemented
+- scheduler claims and runtime execution are not implemented
 
 ## Step run lifecycle
 
@@ -195,7 +195,45 @@ Step run behavior in this step:
 - `retry-step-run` creates a new `step_run` row with `attempt_no + 1` and `previous_step_run_id`
 - retry is allowed only from a terminal predecessor
 - retry from a non-terminal predecessor fails closed
-- run finalization and queue completion are not implemented in this step
+- reviewer outcome handling is a separate step after the reviewer `step_run` becomes terminal
+
+## Reviewer outcomes and follow-up runs
+
+Complete a terminal reviewer step run:
+
+```bash
+cd /home/dkar/workspace/control
+./scripts/complete-reviewer-outcome \
+  --sqlite-db /tmp/control-plane-v2.sqlite \
+  <reviewer-step-run-id> \
+  --verdict approved \
+  --summary "ready to merge"
+```
+
+List the flow chain:
+
+```bash
+cd /home/dkar/workspace/control
+./scripts/list-flow-runs --sqlite-db /tmp/control-plane-v2.sqlite <flow-id>
+```
+
+Reviewer outcome behavior in this step:
+- `approved` completes the current run and completes its queue item
+- `blocked` stops the current run and cancels its queue item
+- `changes_requested` completes the current run and creates a queued follow-up run only if continuation is still allowed
+- a created follow-up run reuses the same `project`, `project_profile`, `workflow_id`, `milestone`, and `flow_id`
+- a created follow-up run stores `parent_run_id`, `origin_type = reviewer_followup`, `origin_run_id`, and `origin_step_run_id`
+- reviewer-created follow-up runs default to `priority_class = interactive`
+- key reviewer semantic outcomes now write `run_snapshots` with both `run` and `flow` scope
+
+Cycle and guardrail behavior in this step:
+- hard stop is enforced as `max_cycles = 3`
+- root run counts as cycle `1`
+- each follow-up run in the same `flow_id` increments the cycle by `1`
+- when `changes_requested` would require cycle `4`, the current run is stopped and no new follow-up run is created
+- provisional `max_run_attempts` is currently counted as total persisted `runs` in the same `flow_id`, so the next follow-up attempt is blocked once it would exceed `3`
+- provisional `max_wall_clock_time` is currently measured from the first run `created_at` in the flow to the reviewer outcome decision time
+- provisional `max_wall_clock_time` is currently fixed in code to `86400` seconds until policy/config semantics are frozen
 
 ## Smoke checks
 
@@ -229,6 +267,11 @@ The smoke script verifies:
 - `retry-step-run` builds a retry chain with `attempt_no + 1` and `previous_step_run_id`
 - invalid retry from a non-terminal step fails cleanly
 - `list-step-runs` and `show-step-run` return the expected chain
+- reviewer `approved` completes the run without creating a follow-up
+- reviewer `blocked` stops the run without creating a follow-up
+- reviewer `changes_requested` creates follow-up runs until cycle `3`
+- reviewer `changes_requested` past cycle `3` stops the current run cleanly
+- `list-flow-runs` returns the ordered flow chain
 
 ## Boundaries of this step
 - No scheduler.
@@ -236,7 +279,7 @@ The smoke script verifies:
 - No runtime execution.
 - No queue execution.
 - No project import of YAML/config payload into SQLite beyond registry metadata.
-- No follow-up run creation.
+- No automatic claim/dispatch.
 - No claim/worker execution.
 - No real Codex launch.
 - No legacy pipeline behavior changes.
@@ -247,8 +290,10 @@ The smoke script verifies:
 - TODO(OPEN_ISSUE): freeze canonical capabilities section taxonomy.
 - TODO(OPEN_ISSUE): freeze canonical opaque id format; current id generation wrapper uses UUIDv4 text behind abstraction.
 - TODO(OPEN_ISSUE): freeze root/manual `origin_type` taxonomy beyond the provisional `root_manual` value used in this step.
+- TODO(OPEN_ISSUE): freeze reviewer follow-up `origin_type` taxonomy beyond the provisional `reviewer_followup` value used in this step.
 - TODO(OPEN_ISSUE): freeze whether retry is allowed from every terminal step status or only from a subset.
 - TODO(OPEN_ISSUE): freeze step transition taxonomy beyond the provisional start/finish/retry labels used in this step.
 - TODO(OPEN_ISSUE): decide whether initial root run creation should also emit `run_snapshots` once snapshot policy is approved.
 - TODO(OPEN_ISSUE): decide when run/queue should move to terminal states after the last step completes.
+- TODO(OPEN_ISSUE): freeze the exact numeric/config source for `max_run_attempts` and `max_wall_clock_time`; current implementation uses provisional in-code values and counting rules.
 - TODO(OPEN_ISSUE): decide long-term home for v2 executable code if a larger Python package layout is introduced later.

@@ -378,7 +378,8 @@ Filesystem stores:
 - The current executable scaffold implements only root run insertion in `queued`.
 - It also inserts one linked `queue_item` in `queued` and append-only initial state transition rows.
 - It can also start and finish `step_runs`, create retry `step_runs`, move a queued run to `running`, and move a queued queue item to `claimed`.
-- Follow-up run creation, queue selection, and real execution transitions are not implemented yet.
+- It can also complete reviewer outcomes, stop/complete the current run, complete/cancel the current queue item, create queued reviewer follow-up runs, and write key `run_snapshots`.
+- Queue selection and real execution transitions are not implemented yet.
 
 ### Interpretation rule
 - `runs.status` models execution lifecycle only.
@@ -403,7 +404,7 @@ Filesystem stores:
 ### Current executable boundary
 - The current executable scaffold supports `executor` and `reviewer` step keys only.
 - Retry is implemented as a new `step_run` row with the same `run_id` and `step_key`, `attempt_no + 1`, and `previous_step_run_id`.
-- The current scaffold does not automatically finish a `run` when a `step_run` reaches a terminal state.
+- A terminal reviewer `step_run` can now be resolved into a semantic reviewer outcome in a separate persistence step.
 
 ### Retry rule
 - Retry is never a state transition on the same `step_run`.
@@ -491,6 +492,12 @@ The contract stores enough information to evaluate:
 - follow-up chain depth by `flow_id` plus `parent_run_id`
 - elapsed wall-clock time by `created_at` and terminal timestamps
 - retry attempts by counting `step_runs` per `run_id` and `step_key`
+
+### Current executable boundary
+- The current executable scaffold enforces `max_cycles = 3` when reviewer-driven follow-up creation is requested.
+- The current executable scaffold also evaluates provisional in-code values for `max_run_attempts` and `max_wall_clock_time`.
+- Current provisional counting rule for `max_run_attempts`: count persisted `runs` in the same `flow_id`, with the root run counted as attempt `1`.
+- Current provisional counting rule for `max_wall_clock_time`: measure elapsed seconds from the first run `created_at` in the flow to the reviewer outcome decision timestamp.
 
 ## Future-ready for Postgres
 - All identifiers are stored as opaque text ids rather than SQLite-only integer row ids.

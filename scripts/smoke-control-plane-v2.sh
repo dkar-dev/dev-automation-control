@@ -31,7 +31,9 @@ sqlite_script = control_dir / "scripts" / "init-sqlite-v1"
 register_script = control_dir / "scripts" / "register-project-package"
 list_script = control_dir / "scripts" / "list-registered-projects"
 create_run_script = control_dir / "scripts" / "create-root-run"
+complete_reviewer_script = control_dir / "scripts" / "complete-reviewer-outcome"
 finish_step_script = control_dir / "scripts" / "finish-step-run"
+list_flow_runs_script = control_dir / "scripts" / "list-flow-runs"
 list_runs_script = control_dir / "scripts" / "list-runs"
 list_step_runs_script = control_dir / "scripts" / "list-step-runs"
 retry_step_script = control_dir / "scripts" / "retry-step-run"
@@ -63,6 +65,96 @@ def run_command(*args: str, expect_success: bool = True) -> subprocess.Completed
 
 def load_error_payload(proc: subprocess.CompletedProcess[str]) -> dict:
     return json.loads(proc.stderr)
+
+
+def load_stdout_payload(proc: subprocess.CompletedProcess[str]) -> dict:
+    return json.loads(proc.stdout)
+
+
+def create_root_run(milestone: str, *, workflow_id: str = "build", project_profile: str = "default") -> dict:
+    return load_stdout_payload(
+        run_command(
+            create_run_script,
+            "--sqlite-db",
+            db_path,
+            "--project-key",
+            "sample-project",
+            "--project-profile",
+            project_profile,
+            "--workflow-id",
+            workflow_id,
+            "--milestone",
+            milestone,
+            "--json",
+        )
+    )["run_details"]
+
+
+def start_step(run_id: str, step_key: str) -> dict:
+    return load_stdout_payload(
+        run_command(
+            start_step_script,
+            "--sqlite-db",
+            db_path,
+            "--run-id",
+            run_id,
+            "--step-key",
+            step_key,
+            "--json",
+        )
+    )["step_run_details"]
+
+
+def finish_step(step_run_id: str, status: str) -> dict:
+    return load_stdout_payload(
+        run_command(
+            finish_step_script,
+            "--sqlite-db",
+            db_path,
+            step_run_id,
+            "--status",
+            status,
+            "--json",
+        )
+    )["step_run_details"]
+
+
+def complete_reviewer(step_run_id: str, verdict: str, summary: str) -> dict:
+    return load_stdout_payload(
+        run_command(
+            complete_reviewer_script,
+            "--sqlite-db",
+            db_path,
+            step_run_id,
+            "--verdict",
+            verdict,
+            "--summary",
+            summary,
+            "--json",
+        )
+    )["reviewer_outcome"]
+
+
+def list_flow(flow_id: str) -> dict:
+    return load_stdout_payload(
+        run_command(
+            list_flow_runs_script,
+            "--sqlite-db",
+            db_path,
+            flow_id,
+            "--json",
+        )
+    )
+
+
+def prepare_run_for_reviewer_outcome(milestone: str, *, reviewer_terminal_status: str = "succeeded") -> tuple[dict, dict]:
+    run_details = create_root_run(milestone)
+    run_payload = run_details["run"]
+    executor_step = start_step(run_payload["id"], "executor")["step_run"]
+    finish_step(executor_step["id"], "succeeded")
+    reviewer_step = start_step(run_payload["id"], "reviewer")["step_run"]
+    reviewer_step = finish_step(reviewer_step["id"], reviewer_terminal_status)["step_run"]
+    return run_payload, reviewer_step
 
 
 with tempfile.TemporaryDirectory() as tmp_dir:
@@ -389,6 +481,105 @@ with tempfile.TemporaryDirectory() as tmp_dir:
     assert show_step_run_payload["step_run_details"]["step_run"]["id"] == reviewer_retry_step["id"], show_step_run_payload
     assert len(show_step_run_payload["step_run_details"]["state_transitions"]) == 2, show_step_run_payload
 
+    approved_run, approved_reviewer_step = prepare_run_for_reviewer_outcome("reviewer-approved")
+    approved_outcome = complete_reviewer(
+        approved_reviewer_step["id"],
+        "approved",
+        "ready to merge",
+    )
+    assert approved_outcome["verdict"] == "approved", approved_outcome
+    assert approved_outcome["current_run"]["run"]["id"] == approved_run["id"], approved_outcome
+    assert approved_outcome["current_run"]["run"]["status"] == "completed", approved_outcome
+    assert approved_outcome["current_run"]["run"]["queue_item"]["status"] == "completed", approved_outcome
+    assert approved_outcome["follow_up_run"] is None, approved_outcome
+    assert approved_outcome["flow_summary"]["continuation_allowed"] is False, approved_outcome
+    assert approved_outcome["flow_summary"]["total_runs"] == 1, approved_outcome
+
+    approved_show_run_payload = load_stdout_payload(
+        run_command(show_run_script, "--sqlite-db", db_path, approved_run["id"], "--json")
+    )
+    assert approved_show_run_payload["run_details"]["run"]["status"] == "completed", approved_show_run_payload
+    assert len(approved_show_run_payload["run_details"]["run_snapshots"]) == 2, approved_show_run_payload
+
+    blocked_run, blocked_reviewer_step = prepare_run_for_reviewer_outcome(
+        "reviewer-blocked",
+        reviewer_terminal_status="failed",
+    )
+    blocked_outcome = complete_reviewer(
+        blocked_reviewer_step["id"],
+        "blocked",
+        "missing required evidence",
+    )
+    assert blocked_outcome["verdict"] == "blocked", blocked_outcome
+    assert blocked_outcome["current_run"]["run"]["status"] == "stopped", blocked_outcome
+    assert blocked_outcome["current_run"]["run"]["queue_item"]["status"] == "cancelled", blocked_outcome
+    assert blocked_outcome["follow_up_run"] is None, blocked_outcome
+    assert blocked_outcome["flow_summary"]["stop_reason_code"] == "blocked", blocked_outcome
+
+    changes_root_run, changes_root_reviewer_step = prepare_run_for_reviewer_outcome("reviewer-changes-cycle-1")
+    changes_root_outcome = complete_reviewer(
+        changes_root_reviewer_step["id"],
+        "changes_requested",
+        "apply requested revisions",
+    )
+    assert changes_root_outcome["current_run"]["run"]["status"] == "completed", changes_root_outcome
+    assert changes_root_outcome["follow_up_run"] is not None, changes_root_outcome
+    follow_up_cycle2 = changes_root_outcome["follow_up_run"]["run"]
+    assert follow_up_cycle2["origin_type"] == "reviewer_followup", changes_root_outcome
+    assert follow_up_cycle2["parent_run_id"] == changes_root_run["id"], changes_root_outcome
+    assert follow_up_cycle2["origin_run_id"] == changes_root_run["id"], changes_root_outcome
+    assert follow_up_cycle2["origin_step_run_id"] == changes_root_reviewer_step["id"], changes_root_outcome
+    assert follow_up_cycle2["flow_id"] == changes_root_run["flow_id"], changes_root_outcome
+    assert follow_up_cycle2["queue_item"]["priority_class"] == "interactive", changes_root_outcome
+    assert follow_up_cycle2["queue_item"]["status"] == "queued", changes_root_outcome
+    assert changes_root_outcome["flow_summary"]["created_follow_up_run_id"] == follow_up_cycle2["id"], changes_root_outcome
+    assert changes_root_outcome["flow_summary"]["total_runs"] == 2, changes_root_outcome
+
+    cycle2_run_id = follow_up_cycle2["id"]
+    cycle2_executor = start_step(cycle2_run_id, "executor")["step_run"]
+    finish_step(cycle2_executor["id"], "succeeded")
+    cycle2_reviewer = start_step(cycle2_run_id, "reviewer")["step_run"]
+    cycle2_reviewer = finish_step(cycle2_reviewer["id"], "succeeded")["step_run"]
+    changes_cycle2_outcome = complete_reviewer(
+        cycle2_reviewer["id"],
+        "changes_requested",
+        "second revision requested",
+    )
+    assert changes_cycle2_outcome["follow_up_run"] is not None, changes_cycle2_outcome
+    follow_up_cycle3 = changes_cycle2_outcome["follow_up_run"]["run"]
+    assert follow_up_cycle3["parent_run_id"] == follow_up_cycle2["id"], changes_cycle2_outcome
+    assert follow_up_cycle3["flow_id"] == changes_root_run["flow_id"], changes_cycle2_outcome
+    assert changes_cycle2_outcome["flow_summary"]["total_runs"] == 3, changes_cycle2_outcome
+
+    cycle3_executor = start_step(follow_up_cycle3["id"], "executor")["step_run"]
+    finish_step(cycle3_executor["id"], "succeeded")
+    cycle3_reviewer = start_step(follow_up_cycle3["id"], "reviewer")["step_run"]
+    cycle3_reviewer = finish_step(cycle3_reviewer["id"], "succeeded")["step_run"]
+    changes_cycle3_outcome = complete_reviewer(
+        cycle3_reviewer["id"],
+        "changes_requested",
+        "third revision requested",
+    )
+    assert changes_cycle3_outcome["follow_up_run"] is None, changes_cycle3_outcome
+    assert changes_cycle3_outcome["current_run"]["run"]["status"] == "stopped", changes_cycle3_outcome
+    assert changes_cycle3_outcome["current_run"]["run"]["queue_item"]["status"] == "cancelled", changes_cycle3_outcome
+    assert changes_cycle3_outcome["flow_summary"]["stop_reason_code"] == "max_cycles_exceeded", changes_cycle3_outcome
+    assert changes_cycle3_outcome["flow_summary"]["total_runs"] == 3, changes_cycle3_outcome
+
+    changes_flow_payload = list_flow(changes_root_run["flow_id"])
+    assert changes_flow_payload["ok"] is True, changes_flow_payload
+    assert [flow_run["cycle_no"] for flow_run in changes_flow_payload["flow_runs"]] == [1, 2, 3], changes_flow_payload
+    assert [flow_run["run"]["id"] for flow_run in changes_flow_payload["flow_runs"]] == [
+        changes_root_run["id"],
+        follow_up_cycle2["id"],
+        follow_up_cycle3["id"],
+    ], changes_flow_payload
+    assert [flow_run["run"]["status"] for flow_run in changes_flow_payload["flow_runs"]] == [
+        "completed",
+        "completed",
+        "stopped",
+    ], changes_flow_payload
+
     with sqlite3.connect(db_path) as conn:
         run_row = conn.execute(
             "SELECT id, status, origin_type, parent_run_id, origin_run_id, origin_step_run_id, started_at FROM runs WHERE id = ?",
@@ -429,6 +620,113 @@ with tempfile.TemporaryDirectory() as tmp_dir:
         ).fetchone()[0]
         assert transition_count == 10, transition_count
 
+        approved_row = conn.execute(
+            "SELECT status, terminal_at FROM runs WHERE id = ?",
+            (approved_run["id"],),
+        ).fetchone()
+        assert approved_row == ("completed", approved_row[1]), approved_row
+        assert approved_row[1] is not None, approved_row
+        approved_queue_row = conn.execute(
+            "SELECT status, terminal_at FROM queue_items WHERE run_id = ?",
+            (approved_run["id"],),
+        ).fetchone()
+        assert approved_queue_row == ("completed", approved_queue_row[1]), approved_queue_row
+        assert approved_queue_row[1] is not None, approved_queue_row
+
+        blocked_row = conn.execute(
+            "SELECT status, terminal_at FROM runs WHERE id = ?",
+            (blocked_run["id"],),
+        ).fetchone()
+        assert blocked_row == ("stopped", blocked_row[1]), blocked_row
+        assert blocked_row[1] is not None, blocked_row
+        blocked_queue_row = conn.execute(
+            "SELECT status, terminal_at FROM queue_items WHERE run_id = ?",
+            (blocked_run["id"],),
+        ).fetchone()
+        assert blocked_queue_row == ("cancelled", blocked_queue_row[1]), blocked_queue_row
+        assert blocked_queue_row[1] is not None, blocked_queue_row
+
+        changes_flow_rows = conn.execute(
+            """
+            SELECT id, parent_run_id, origin_type, origin_run_id, origin_step_run_id, status
+            FROM runs
+            WHERE flow_id = ?
+            ORDER BY created_at, id
+            """,
+            (changes_root_run["flow_id"],),
+        ).fetchall()
+        assert [(row[0], row[1], row[2], row[3], row[4], row[5]) for row in changes_flow_rows] == [
+            (changes_root_run["id"], None, "root_manual", None, None, "completed"),
+            (
+                follow_up_cycle2["id"],
+                changes_root_run["id"],
+                "reviewer_followup",
+                changes_root_run["id"],
+                changes_root_reviewer_step["id"],
+                "completed",
+            ),
+            (
+                follow_up_cycle3["id"],
+                follow_up_cycle2["id"],
+                "reviewer_followup",
+                follow_up_cycle2["id"],
+                cycle2_reviewer["id"],
+                "stopped",
+            ),
+        ], changes_flow_rows
+
+        changes_flow_queue_rows = conn.execute(
+            """
+            SELECT runs.id, queue_items.priority_class, queue_items.status
+            FROM queue_items
+            JOIN runs ON runs.id = queue_items.run_id
+            WHERE runs.flow_id = ?
+            ORDER BY runs.created_at, runs.id
+            """,
+            (changes_root_run["flow_id"],),
+        ).fetchall()
+        assert changes_flow_queue_rows == [
+            (changes_root_run["id"], "interactive", "completed"),
+            (follow_up_cycle2["id"], "interactive", "completed"),
+            (follow_up_cycle3["id"], "interactive", "cancelled"),
+        ], changes_flow_queue_rows
+
+        run_snapshot_counts = {
+            "approved": conn.execute(
+                "SELECT COUNT(*) FROM run_snapshots WHERE snapshot_scope = 'run' AND run_id = ?",
+                (approved_run["id"],),
+            ).fetchone()[0],
+            "blocked": conn.execute(
+                "SELECT COUNT(*) FROM run_snapshots WHERE snapshot_scope = 'run' AND run_id = ?",
+                (blocked_run["id"],),
+            ).fetchone()[0],
+            "changes_cycle_1": conn.execute(
+                "SELECT COUNT(*) FROM run_snapshots WHERE snapshot_scope = 'run' AND run_id = ?",
+                (changes_root_run["id"],),
+            ).fetchone()[0],
+            "changes_cycle_2": conn.execute(
+                "SELECT COUNT(*) FROM run_snapshots WHERE snapshot_scope = 'run' AND run_id = ?",
+                (follow_up_cycle2["id"],),
+            ).fetchone()[0],
+            "changes_cycle_3": conn.execute(
+                "SELECT COUNT(*) FROM run_snapshots WHERE snapshot_scope = 'run' AND run_id = ?",
+                (follow_up_cycle3["id"],),
+            ).fetchone()[0],
+        }
+        assert run_snapshot_counts == {
+            "approved": 1,
+            "blocked": 1,
+            "changes_cycle_1": 1,
+            "changes_cycle_2": 1,
+            "changes_cycle_3": 1,
+        }, run_snapshot_counts
+
+        flow_snapshot_count = conn.execute(
+            "SELECT COUNT(*) FROM run_snapshots WHERE snapshot_scope = 'flow' AND flow_id = ?",
+            (changes_root_run["flow_id"],),
+        ).fetchone()[0]
+        assert flow_snapshot_count == 3, flow_snapshot_count
+
         actual_tables = {
             row[0]
             for row in conn.execute(
@@ -453,6 +751,21 @@ with tempfile.TemporaryDirectory() as tmp_dir:
                 "created_run_id": created_run["id"],
                 "created_flow_id": created_run["flow_id"],
                 "run_transition_count": transition_count,
+                "reviewer_outcomes": {
+                    "approved_run_id": approved_run["id"],
+                    "blocked_run_id": blocked_run["id"],
+                    "changes_flow_id": changes_root_run["flow_id"],
+                    "changes_flow_run_ids": [
+                        changes_root_run["id"],
+                        follow_up_cycle2["id"],
+                        follow_up_cycle3["id"],
+                    ],
+                    "changes_flow_statuses": [
+                        flow_run["run"]["status"] for flow_run in changes_flow_payload["flow_runs"]
+                    ],
+                    "changes_flow_stop_reason_code": changes_cycle3_outcome["flow_summary"]["stop_reason_code"],
+                },
+                "run_snapshot_counts": run_snapshot_counts,
                 "step_run_chain": [
                     {
                         "id": step_run["id"],

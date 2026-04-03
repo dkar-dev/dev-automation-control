@@ -34,6 +34,7 @@
 - The project YAML package remains the primary source of truth outside SQLite; the registry row is linkage metadata only.
 - The current executable scaffold also writes root run rows into `runs`, one linked queue row into `queue_items`, and initial append-only rows into `state_transitions`.
 - The current executable scaffold also writes `step_runs` rows plus append-only `state_transitions` for step start, finish, and retry events.
+- The current executable scaffold also persists reviewer semantic outcomes, follow-up `runs`/`queue_items`, and key `run_snapshots` for run/flow debugging.
 - `runs`, `step_runs`, and `queue_items` hold current mutable active state.
 - `state_transitions`, `run_snapshots`, and `artifact_refs` are append-only records.
 - Flow linkage lives on `runs` via `flow_id`, `parent_run_id`, `origin_type`, `origin_run_id`, and `origin_step_run_id`.
