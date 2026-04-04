@@ -79,6 +79,19 @@ from .runtime_cleanup_manager import (
     run_cleanup_once,
     show_cleanup_status,
 )
+from .http_api import (
+    API_DEFAULT_HOST,
+    API_DEFAULT_PORT,
+    API_ENV_ARTIFACT_ROOT,
+    API_ENV_HOST,
+    API_ENV_PORT,
+    API_ENV_SQLITE_DB,
+    API_ENV_WORKER_LOG_ROOT,
+    API_ENV_WORKSPACE_ROOT,
+    ControlPlaneApiConfigError,
+    create_control_plane_api_config,
+    serve_control_plane_api,
+)
 from .task_intake import (
     TaskIntakeError,
     list_submitted_tasks,
@@ -1368,6 +1381,54 @@ def main_show_cleanup_status(argv: list[str] | None = None) -> int:
     return 0
 
 
+def main_run_control_plane_api(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(description="Run the local Control Plane v2 HTTP API.")
+    _add_control_plane_api_arguments(parser)
+    args = parser.parse_args(argv)
+
+    try:
+        config = _build_control_plane_api_config_from_args(args)
+    except ControlPlaneApiConfigError as exc:
+        print(f"Control Plane API config failed: {exc.message}", file=sys.stderr)
+        if exc.details:
+            print(f"Details: {exc.details}", file=sys.stderr)
+        return 1
+
+    serve_control_plane_api(config)
+    return 0
+
+
+def main_show_control_plane_config(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(description="Show the effective local Control Plane v2 HTTP API config.")
+    _add_control_plane_api_arguments(parser)
+    parser.add_argument("--json", action="store_true", help="Print machine-readable JSON output")
+    args = parser.parse_args(argv)
+
+    try:
+        config = _build_control_plane_api_config_from_args(args)
+    except ControlPlaneApiConfigError as exc:
+        payload = {"ok": False, "stage": "http_api", "error": exc.to_dict()}
+        if args.json:
+            print(json.dumps(payload, ensure_ascii=False, indent=2), file=sys.stderr)
+        else:
+            print(f"Control Plane API config failed: {exc.message}", file=sys.stderr)
+            if exc.details:
+                print(f"Details: {exc.details}", file=sys.stderr)
+        return 1
+
+    payload = {"ok": True, "control_plane_api": config.to_dict()}
+    if args.json:
+        print(json.dumps(payload, ensure_ascii=False, indent=2))
+    else:
+        print(f"Base URL: {config.base_url}")
+        print(f"SQLite DB: {config.sqlite_db}")
+        print(f"Default artifact root: {config.default_artifact_root or 'none'}")
+        print(f"Default workspace root: {config.default_workspace_root or 'none'}")
+        print(f"Default worker log root: {config.default_worker_log_root or 'none'}")
+        print("Bind policy: localhost-only")
+    return 0
+
+
 def main_submit_bounded_task(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Submit one bounded task into Control Plane v2.")
     parser.add_argument("--sqlite-db", required=True, help="SQLite database path bootstrapped with init-sqlite-v1")
@@ -1879,6 +1940,51 @@ def _build_worker_runtime_config_from_args(args: argparse.Namespace) -> WorkerRu
         executor_runner_path=Path(args.executor_runner).expanduser().resolve() if getattr(args, "executor_runner", None) else None,
         reviewer_runner_path=Path(args.reviewer_runner).expanduser().resolve() if getattr(args, "reviewer_runner", None) else None,
         claim_now=getattr(args, "claim_now", None),
+    )
+
+
+def _add_control_plane_api_arguments(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument(
+        "--host",
+        default=None,
+        help=f"Bind host (defaults to {API_ENV_HOST} or {API_DEFAULT_HOST}; localhost-only in v1)",
+    )
+    parser.add_argument(
+        "--port",
+        type=int,
+        default=None,
+        help=f"Bind port (defaults to {API_ENV_PORT} or {API_DEFAULT_PORT})",
+    )
+    parser.add_argument(
+        "--sqlite-db",
+        default=None,
+        help=f"SQLite database path (or set {API_ENV_SQLITE_DB})",
+    )
+    parser.add_argument(
+        "--artifact-root",
+        default=None,
+        help=f"Optional default artifact root for intake/worker requests (or set {API_ENV_ARTIFACT_ROOT})",
+    )
+    parser.add_argument(
+        "--workspace-root",
+        default=None,
+        help=f"Optional default workspace root for intake/worker requests (or set {API_ENV_WORKSPACE_ROOT})",
+    )
+    parser.add_argument(
+        "--worker-log-root",
+        default=None,
+        help=f"Optional default worker log root (or set {API_ENV_WORKER_LOG_ROOT})",
+    )
+
+
+def _build_control_plane_api_config_from_args(args: argparse.Namespace):
+    return create_control_plane_api_config(
+        host=args.host,
+        port=args.port,
+        sqlite_db=args.sqlite_db,
+        default_artifact_root=args.artifact_root,
+        default_workspace_root=args.workspace_root,
+        default_worker_log_root=args.worker_log_root,
     )
 
 

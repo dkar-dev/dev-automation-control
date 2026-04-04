@@ -1,8 +1,8 @@
-# Control Plane v2 Bootstrap, Validation, SQLite Migrations, Registry, Intake, Run, Step, Dispatch, Worker, Manual Control, and Cleanup Utilities
+# Control Plane v2 Bootstrap, Validation, SQLite Migrations, Registry, Intake, Run, Step, Dispatch, Worker, Manual Control, Cleanup, and Local HTTP API Utilities
 
 ## Scope
 - This step adds the first executable infrastructure layer for the v2 scaffold only.
-- It provides strict project package validation, SQLite schema bootstrap/init, SQLite migration management, project registry/import, bounded task intake/run submission, root run creation/inspection, step_run lifecycle utilities, reviewer outcome/follow-up persistence, provisional scheduler claim/release primitives, a bounded manual dispatch adapter for claimed runs, a bounded single-worker loop v1, a bounded manual control/recovery layer v1, and a bounded runtime cleanup manager v1.
+- It provides strict project package validation, SQLite schema bootstrap/init, SQLite migration management, project registry/import, bounded task intake/run submission, root run creation/inspection, step_run lifecycle utilities, reviewer outcome/follow-up persistence, provisional scheduler claim/release primitives, a bounded manual dispatch adapter for claimed runs, a bounded single-worker loop v1, a bounded manual control/recovery layer v1, a bounded runtime cleanup manager v1, and a thin localhost-only HTTP API v1 over those same primitives.
 - It still does not implement a daemon/service runtime, multi-worker protocol, or auto-continue policy engine.
 
 ## Project package validation
@@ -720,6 +720,51 @@ What is not supported in this step:
 - distributed garbage collection
 - daemon/service scheduling for cleanup
 
+## Local HTTP API v1
+
+Run the localhost-only API:
+
+```bash
+cd /home/dkar/workspace/control
+./scripts/run-control-plane-api \
+  --sqlite-db /tmp/control-plane-v2.sqlite \
+  --host 127.0.0.1 \
+  --port 8788
+```
+
+Inspect the effective config:
+
+```bash
+cd /home/dkar/workspace/control
+./scripts/show-control-plane-config \
+  --sqlite-db /tmp/control-plane-v2.sqlite \
+  --json
+```
+
+HTTP API behavior in this step:
+- it is a thin transport layer over existing `task_intake`, `worker_loop`, `manual_control`, and `runtime_cleanup_manager`
+- it uses Python stdlib `http.server.ThreadingHTTPServer`
+- it is JSON-only and returns a stable envelope with `ok`, `data`, `error`, and `request_id`
+- it is localhost-only in v1 and intentionally does not implement auth or tenancy
+- default bind is `127.0.0.1:8788`, so it stays separate from the legacy bridge on `127.0.0.1:8787`
+
+Current endpoint surface:
+- `POST /v1/tasks/submit`
+- `GET /v1/tasks/{run_id}`
+- `GET /v1/tasks`
+- `POST /v1/worker/tick`
+- `POST /v1/worker/run-until-idle`
+- `POST /v1/runs/{run_id}/pause`
+- `POST /v1/runs/{run_id}/resume`
+- `POST /v1/runs/{run_id}/force-stop`
+- `POST /v1/runs/{run_id}/rerun-step`
+- `GET /v1/runs/{run_id}/control-state`
+- `POST /v1/cleanup/run-once`
+- `GET /v1/health`
+
+For the full request/response contract and `n8n` payload examples, see:
+- [`docs/control-plane-v2/local-http-api.md`](/home/dkar/workspace/control/docs/control-plane-v2/local-http-api.md)
+
 ## Smoke checks
 
 Run the isolated smoke coverage for validator and SQLite bootstrap:
@@ -859,6 +904,21 @@ The intake smoke verifies:
 - root run creation plus intake manifest persistence
 - submission overrides for overlays, source, and thread label
 - worker pickup without a separate dispatch `context.json`
+
+Run the focused local HTTP API smoke:
+
+```bash
+cd /home/dkar/workspace/control
+./scripts/smoke-control-plane-v2-api.sh
+```
+
+The HTTP API smoke verifies:
+- local server startup plus `GET /v1/health`
+- malformed JSON failure
+- task submit/list/show through HTTP
+- worker tick and run-until-idle through HTTP
+- pause/resume/force-stop through HTTP
+- cleanup dry-run through HTTP
 
 ## Boundaries of this step
 - No daemonized worker/service manager.

@@ -13,6 +13,7 @@ This repo is the control plane for orchestration between ChatGPT Web, n8n, Playw
 - The v2 scaffold now also includes a lightweight SQLite migration path, so schema evolution no longer requires re-initializing the database for every accepted change.
 - The v2 scaffold now also includes a bounded runtime cleanup manager v1 for terminal-only retention of artifacts, runtime worktrees, and local runtime branches.
 - The v2 scaffold now also includes a bounded task intake / run submission layer v1, so bounded tasks can be submitted as one normalized entrypoint instead of hand-assembling root runs plus runtime context.
+- The v2 scaffold now also includes a thin localhost-only HTTP API v1, so `n8n` and other local automations can call intake, worker, manual-control, and cleanup primitives over stable JSON endpoints.
 - Migration from legacy pipeline to v2 is not completed yet.
 - The first executable v2 utilities now live in:
   - `scripts/validate-project-package`
@@ -53,6 +54,8 @@ This repo is the control plane for orchestration between ChatGPT Web, n8n, Playw
   - `scripts/list-cleanup-candidates`
   - `scripts/run-cleanup-once`
   - `scripts/show-cleanup-status`
+  - `scripts/run-control-plane-api`
+  - `scripts/show-control-plane-config`
   - `scripts/smoke-control-plane-v2.sh`
   - `scripts/smoke-control-plane-v2-sqlite-migrations.sh`
   - `scripts/smoke-control-plane-v2-dispatch.sh`
@@ -60,9 +63,11 @@ This repo is the control plane for orchestration between ChatGPT Web, n8n, Playw
   - `scripts/smoke-control-plane-v2-manual-control.sh`
   - `scripts/smoke-control-plane-v2-cleanup.sh`
   - `scripts/smoke-control-plane-v2-intake.sh`
+  - `scripts/smoke-control-plane-v2-api.sh`
 - Operator/dev usage notes for those utilities are in:
   - [`docs/control-plane-v2/bootstrap-and-validation.md`](/home/dkar/workspace/control/docs/control-plane-v2/bootstrap-and-validation.md)
   - [`docs/control-plane-v2/manual-dispatch.md`](/home/dkar/workspace/control/docs/control-plane-v2/manual-dispatch.md)
+  - [`docs/control-plane-v2/local-http-api.md`](/home/dkar/workspace/control/docs/control-plane-v2/local-http-api.md)
 
 ## Single-task v1 contract
 - One active task at a time
@@ -81,6 +86,7 @@ This repo is the control plane for orchestration between ChatGPT Web, n8n, Playw
 - `scripts/submit-bounded-task` creates a root run plus persisted submission/runtime-context manifests, so `scripts/run-worker-tick` can pick up the queued run later without a separate `context.json`.
 - `scripts/pause-run`, `scripts/resume-run`, `scripts/force-stop-run`, and `scripts/rerun-run-step` provide the bounded v1 manual recovery layer over the same run/queue/step primitives.
 - `scripts/list-cleanup-candidates`, `scripts/run-cleanup-once`, and `scripts/show-cleanup-status` provide terminal-only TTL cleanup for runtime artifacts, worktrees, and local runtime branches, while preserving cleanup audit metadata in SQLite.
+- `scripts/run-control-plane-api` exposes those same v2 primitives over localhost-only JSON endpoints at `127.0.0.1:8788` by default; it is separate from the legacy bridge on `127.0.0.1:8787`.
 - n8n should send symbolic instruction selectors only: `instruction_profile`, `instruction_overlays`, and `instructions_repo_path`.
 - The control layer resolves instruction files on the host, records the repo revision and exact files used, then builds the final executor/reviewer prompts locally.
 - `GET /current-run` now exposes `instruction_profile`, `instruction_overlays`, `instructions_repo_path`, `instructions_revision`, and `resolved_instruction_files`.
