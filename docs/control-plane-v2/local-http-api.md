@@ -216,6 +216,21 @@ curl -s http://127.0.0.1:8788/v1/cleanup/run-once \
 - Set `Content-Type: application/json`
 - Treat `request_id` as the correlation key in logs and failure handling
 
+Importable n8n templates for this API now live under:
+- [`automation/n8n/workflows/`](/home/dkar/workspace/control/automation/n8n/workflows)
+
+Supporting n8n docs now live under:
+- [`docs/n8n/README.md`](/home/dkar/workspace/control/docs/n8n/README.md)
+- [`docs/n8n/configuration.md`](/home/dkar/workspace/control/docs/n8n/configuration.md)
+- [`docs/n8n/example-payloads.md`](/home/dkar/workspace/control/docs/n8n/example-payloads.md)
+- [`docs/n8n/smoke.md`](/home/dkar/workspace/control/docs/n8n/smoke.md)
+
+Boundary for the n8n package:
+- `n8n` calls only the HTTP API on `8788`
+- `n8n` does not open SQLite directly
+- `n8n` does not call the legacy bridge on `8787`
+- `Code` nodes are limited to request/response shaping
+
 Recommended first v1 flow for `n8n`:
 1. `POST /v1/tasks/submit`
 2. `POST /v1/worker/tick` or `POST /v1/worker/run-until-idle`
@@ -226,6 +241,13 @@ Recommended first v1 flow for `n8n`:
 ```bash
 cd /home/dkar/workspace/control
 ./scripts/smoke-control-plane-v2-api.sh
+```
+
+Focused n8n-binding wrapper:
+
+```bash
+cd /home/dkar/workspace/control
+./scripts/smoke-control-plane-v2-n8n-binding.sh
 ```
 
 This smoke verifies:
@@ -244,3 +266,5 @@ This smoke verifies:
 - distributed coordination
 - remote worker execution protocol
 - replacing the legacy bridge on `8787`
+- direct SQLite access from `n8n`
+- calling host-side legacy scripts from inside `n8n`

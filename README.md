@@ -14,6 +14,7 @@ This repo is the control plane for orchestration between ChatGPT Web, n8n, Playw
 - The v2 scaffold now also includes a bounded runtime cleanup manager v1 for terminal-only retention of artifacts, runtime worktrees, and local runtime branches.
 - The v2 scaffold now also includes a bounded task intake / run submission layer v1, so bounded tasks can be submitted as one normalized entrypoint instead of hand-assembling root runs plus runtime context.
 - The v2 scaffold now also includes a thin localhost-only HTTP API v1, so `n8n` and other local automations can call intake, worker, manual-control, and cleanup primitives over stable JSON endpoints.
+- The v2 scaffold now also includes an importable n8n workflow package v1 over that HTTP API, so n8n can stay a thin orchestration client instead of embedding control-plane logic.
 - Migration from legacy pipeline to v2 is not completed yet.
 - The first executable v2 utilities now live in:
   - `scripts/validate-project-package`
@@ -64,10 +65,28 @@ This repo is the control plane for orchestration between ChatGPT Web, n8n, Playw
   - `scripts/smoke-control-plane-v2-cleanup.sh`
   - `scripts/smoke-control-plane-v2-intake.sh`
   - `scripts/smoke-control-plane-v2-api.sh`
+  - `scripts/smoke-control-plane-v2-n8n-binding.sh`
 - Operator/dev usage notes for those utilities are in:
   - [`docs/control-plane-v2/bootstrap-and-validation.md`](/home/dkar/workspace/control/docs/control-plane-v2/bootstrap-and-validation.md)
   - [`docs/control-plane-v2/manual-dispatch.md`](/home/dkar/workspace/control/docs/control-plane-v2/manual-dispatch.md)
   - [`docs/control-plane-v2/local-http-api.md`](/home/dkar/workspace/control/docs/control-plane-v2/local-http-api.md)
+  - [`docs/n8n/README.md`](/home/dkar/workspace/control/docs/n8n/README.md)
+
+## n8n HTTP API binding v1
+- Importable workflows live under [`automation/n8n/workflows/`](/home/dkar/workspace/control/automation/n8n/workflows).
+- Package overview, config notes, payload examples, and smoke guidance live under [`docs/n8n/`](/home/dkar/workspace/control/docs/n8n/README.md).
+- The v1 package covers:
+  - submit bounded task
+  - run worker until idle
+  - inspect / pause / resume / force-stop
+- Base URL guidance:
+  - `http://host.docker.internal:8788` when `n8n` runs in Docker
+  - `http://127.0.0.1:8788` when `n8n` runs on the host
+- Boundary:
+  - `n8n` talks only to the Control Plane HTTP API
+  - `n8n` does not access SQLite directly
+  - `n8n` does not call the legacy bridge on `127.0.0.1:8787`
+  - `Code` nodes in the package only build JSON payloads and flatten API responses
 
 ## Single-task v1 contract
 - One active task at a time
@@ -87,6 +106,7 @@ This repo is the control plane for orchestration between ChatGPT Web, n8n, Playw
 - `scripts/pause-run`, `scripts/resume-run`, `scripts/force-stop-run`, and `scripts/rerun-run-step` provide the bounded v1 manual recovery layer over the same run/queue/step primitives.
 - `scripts/list-cleanup-candidates`, `scripts/run-cleanup-once`, and `scripts/show-cleanup-status` provide terminal-only TTL cleanup for runtime artifacts, worktrees, and local runtime branches, while preserving cleanup audit metadata in SQLite.
 - `scripts/run-control-plane-api` exposes those same v2 primitives over localhost-only JSON endpoints at `127.0.0.1:8788` by default; it is separate from the legacy bridge on `127.0.0.1:8787`.
+- The new n8n workflow package for v2 should call that HTTP API on `8788`, not the legacy bridge on `8787`.
 - n8n should send symbolic instruction selectors only: `instruction_profile`, `instruction_overlays`, and `instructions_repo_path`.
 - The control layer resolves instruction files on the host, records the repo revision and exact files used, then builds the final executor/reviewer prompts locally.
 - `GET /current-run` now exposes `instruction_profile`, `instruction_overlays`, `instructions_repo_path`, `instructions_revision`, and `resolved_instruction_files`.
@@ -189,7 +209,8 @@ overlays/<name>/reviewer.md
   - `GET /current-run`
 - Status transitions for executor+reviewer runs are `queued -> executor_running -> executor_done -> reviewer_running -> completed|failed`.
 - `POST /finalize-run` is still available for compatibility and manual intervention, but host-side reviewer completion no longer depends on it.
-- Existing n8n workflow export in the repo is intentionally not changed in this task.
+- The legacy workflow export at [`n8n/workflows/control-bridge-run-v1.json`](/home/dkar/workspace/control/n8n/workflows/control-bridge-run-v1.json) remains for compatibility notes only.
+- The forward path for Control Plane v2 in n8n is the HTTP API package under [`automation/n8n/workflows/`](/home/dkar/workspace/control/automation/n8n/workflows).
 
 ## Local startup path
 1. Start the host-side bridge:
@@ -224,6 +245,26 @@ overlays/<name>/reviewer.md
        "instructions_repo_path": "/home/dkar/workspace/instructions"
      }'
    ```
+
+## Local startup path for n8n HTTP API binding v1
+1. Start the Control Plane API:
+   ```bash
+   cd /home/dkar/workspace/control
+   ./scripts/run-control-plane-api \
+     --sqlite-db /tmp/control-plane-v2.sqlite \
+     --host 127.0.0.1 \
+     --port 8788
+   ```
+2. Start local n8n:
+   ```bash
+   cd /home/dkar/workspace/runtime/services/n8n
+   docker compose up -d
+   ```
+3. Open `http://127.0.0.1:5678` and import one or more workflows from [`automation/n8n/workflows/`](/home/dkar/workspace/control/automation/n8n/workflows).
+4. Set the workflow `base_url`:
+   - `http://host.docker.internal:8788` if n8n runs in Docker
+   - `http://127.0.0.1:8788` if n8n runs on the host
+5. Execute the imported workflow and inspect the flattened output from the final `Code` node.
 
 ## Smoke test
 - Run the isolated e2e smoke script:

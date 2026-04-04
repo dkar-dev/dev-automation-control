@@ -1,0 +1,417 @@
+[
+  {
+    "id": "controlPlaneV2ManualControlV1",
+    "name": "Control Plane v2 - Manual Control v1",
+    "active": false,
+    "isArchived": false,
+    "settings": {
+      "executionOrder": "v1"
+    },
+    "pinData": {},
+    "versionId": "62dcf3ad-b2ee-4bd4-8a0f-d2a5d8af1475",
+    "versionMetadata": null,
+    "nodes": [
+      {
+        "parameters": {},
+        "id": "c52474b2-e7dc-4f0c-8c94-a5801d60b8cf",
+        "name": "Manual Trigger",
+        "type": "n8n-nodes-base.manualTrigger",
+        "typeVersion": 1,
+        "position": [
+          220,
+          340
+        ]
+      },
+      {
+        "parameters": {
+          "assignments": {
+            "assignments": [
+              {
+                "id": "9d055651-c278-4b47-9ca2-f2dff550e3c1",
+                "name": "base_url",
+                "type": "string",
+                "value": "={{ $env.N8N_CONTROL_PLANE_BASE_URL || 'http://host.docker.internal:8788' }}"
+              },
+              {
+                "id": "f363a892-bad5-42af-b354-2076c975ee03",
+                "name": "run_id",
+                "type": "string",
+                "value": "run_..."
+              },
+              {
+                "id": "d880b413-bb79-4540-b34a-f0eb09f14b6f",
+                "name": "action",
+                "type": "string",
+                "value": "show_control_state"
+              },
+              {
+                "id": "b62854d6-b91f-4a55-b047-7336b6ee30c2",
+                "name": "note",
+                "type": "string",
+                "value": "n8n operator action"
+              },
+              {
+                "id": "932bd09c-c8fd-411c-a2ef-101257e63bbf",
+                "name": "operator",
+                "type": "string",
+                "value": "={{ $env.N8N_CONTROL_PLANE_OPERATOR || 'n8n' }}"
+              },
+              {
+                "id": "ad5c7264-4821-464d-b73f-78ed3f0f3050",
+                "name": "resume_mode",
+                "type": "string",
+                "value": "normal"
+              }
+            ]
+          },
+          "options": {}
+        },
+        "id": "317f998d-a24c-48d7-b99d-48625af4f915",
+        "name": "Edit Fields",
+        "type": "n8n-nodes-base.set",
+        "typeVersion": 3.4,
+        "position": [
+          500,
+          340
+        ]
+      },
+      {
+        "parameters": {
+          "jsCode": "const input = $input.first().json;\n\nconst requiredText = (fieldName) => {\n  const value = String(input[fieldName] ?? '').trim();\n  if (!value) {\n    throw new Error(`${fieldName} is required`);\n  }\n  return value;\n};\n\nconst optionalText = (fieldName) => {\n  const value = String(input[fieldName] ?? '').trim();\n  return value || undefined;\n};\n\nconst allowedActions = new Set(['show_control_state', 'pause', 'resume', 'force_stop']);\nconst action = requiredText('action');\nif (!allowedActions.has(action)) {\n  throw new Error(`action must be one of: ${Array.from(allowedActions).join(', ')}`);\n}\n\nconst baseUrl = requiredText('base_url').replace(/\\/$/, '');\nconst runId = requiredText('run_id');\nconst encodedRunId = encodeURIComponent(runId);\nconst note = optionalText('note');\nconst operator = optionalText('operator');\nconst resumeMode = optionalText('resume_mode') || 'normal';\n\nconst commonBody = {};\nif (note !== undefined) {\n  commonBody.note = note;\n}\nif (operator !== undefined) {\n  commonBody.operator = operator;\n}\n\nreturn [\n  {\n    json: {\n      action,\n      run_id: runId,\n      inspect_url: `${baseUrl}/v1/runs/${encodedRunId}/control-state`,\n      pause_url: `${baseUrl}/v1/runs/${encodedRunId}/pause`,\n      resume_url: `${baseUrl}/v1/runs/${encodedRunId}/resume`,\n      force_stop_url: `${baseUrl}/v1/runs/${encodedRunId}/force-stop`,\n      pause_body: { ...commonBody },\n      resume_body: { ...commonBody, mode: resumeMode },\n      force_stop_body: { ...commonBody },\n    },\n  },\n];"
+        },
+        "id": "0417c033-f56b-46e8-a02c-1ca6e1261f5f",
+        "name": "Build Manual Control Request",
+        "type": "n8n-nodes-base.code",
+        "typeVersion": 2,
+        "position": [
+          780,
+          340
+        ]
+      },
+      {
+        "parameters": {
+          "conditions": {
+            "string": [
+              {
+                "value1": "={{ $json.action }}",
+                "operation": "equal",
+                "value2": "show_control_state"
+              }
+            ]
+          }
+        },
+        "id": "2442f14e-ad59-44b8-af39-f7c0f1cc67c2",
+        "name": "Action is Show Control State?",
+        "type": "n8n-nodes-base.if",
+        "typeVersion": 1,
+        "position": [
+          1060,
+          340
+        ]
+      },
+      {
+        "parameters": {
+          "conditions": {
+            "string": [
+              {
+                "value1": "={{ $json.action }}",
+                "operation": "equal",
+                "value2": "pause"
+              }
+            ]
+          }
+        },
+        "id": "831b2c80-8a80-4d46-b4cc-b4dca926e1a2",
+        "name": "Action is Pause?",
+        "type": "n8n-nodes-base.if",
+        "typeVersion": 1,
+        "position": [
+          1340,
+          460
+        ]
+      },
+      {
+        "parameters": {
+          "conditions": {
+            "string": [
+              {
+                "value1": "={{ $json.action }}",
+                "operation": "equal",
+                "value2": "resume"
+              }
+            ]
+          }
+        },
+        "id": "33a06a0c-6407-4c30-87b8-a9403fdc7181",
+        "name": "Action is Resume?",
+        "type": "n8n-nodes-base.if",
+        "typeVersion": 1,
+        "position": [
+          1620,
+          580
+        ]
+      },
+      {
+        "parameters": {
+          "method": "GET",
+          "url": "={{ $json.inspect_url }}",
+          "authentication": "none",
+          "options": {}
+        },
+        "id": "f26faec7-d85d-4f35-8e46-c365ff079675",
+        "name": "HTTP Request - Show Control State",
+        "type": "n8n-nodes-base.httpRequest",
+        "typeVersion": 4.4,
+        "position": [
+          1340,
+          200
+        ]
+      },
+      {
+        "parameters": {
+          "method": "POST",
+          "url": "={{ $json.pause_url }}",
+          "authentication": "none",
+          "sendBody": true,
+          "contentType": "json",
+          "specifyBody": "json",
+          "jsonBody": "={{ $json.pause_body }}",
+          "options": {}
+        },
+        "id": "6db66395-fbd2-4606-8154-3074344d8e91",
+        "name": "HTTP Request - Pause",
+        "type": "n8n-nodes-base.httpRequest",
+        "typeVersion": 4.4,
+        "position": [
+          1620,
+          400
+        ]
+      },
+      {
+        "parameters": {
+          "method": "POST",
+          "url": "={{ $json.resume_url }}",
+          "authentication": "none",
+          "sendBody": true,
+          "contentType": "json",
+          "specifyBody": "json",
+          "jsonBody": "={{ $json.resume_body }}",
+          "options": {}
+        },
+        "id": "7a1ae2be-9399-4b63-83e2-8333d4bff54b",
+        "name": "HTTP Request - Resume",
+        "type": "n8n-nodes-base.httpRequest",
+        "typeVersion": 4.4,
+        "position": [
+          1900,
+          520
+        ]
+      },
+      {
+        "parameters": {
+          "method": "POST",
+          "url": "={{ $json.force_stop_url }}",
+          "authentication": "none",
+          "sendBody": true,
+          "contentType": "json",
+          "specifyBody": "json",
+          "jsonBody": "={{ $json.force_stop_body }}",
+          "options": {}
+        },
+        "id": "1535392f-14a1-4f85-a80a-f0cfe36d9097",
+        "name": "HTTP Request - Force Stop",
+        "type": "n8n-nodes-base.httpRequest",
+        "typeVersion": 4.4,
+        "position": [
+          1900,
+          700
+        ]
+      },
+      {
+        "parameters": {
+          "jsCode": "const response = $input.first().json;\nconst controlState = response.data?.control_state ?? {};\n\nreturn [\n  {\n    json: {\n      action: 'show_control_state',\n      ok: response.ok,\n      request_id: response.request_id,\n      run_id: controlState.run_id ?? null,\n      run_status: controlState.run_status ?? null,\n      queue_status: controlState.queue_status ?? null,\n      paused: controlState.paused ?? null,\n      terminal: controlState.terminal ?? null,\n      scheduling_eligible: controlState.scheduling_eligible ?? null,\n      active_step_run_id: controlState.active_step_run_id ?? null,\n      latest_manual_transition_type: controlState.latest_manual_transition_type ?? null,\n      latest_resume_mode: controlState.latest_resume_mode ?? null,\n      raw_response: response,\n    },\n  },\n];"
+        },
+        "id": "e8d4fd58-b3ab-48e8-87f7-b022d96ad5c6",
+        "name": "Format Control State",
+        "type": "n8n-nodes-base.code",
+        "typeVersion": 2,
+        "position": [
+          1620,
+          200
+        ]
+      },
+      {
+        "parameters": {
+          "jsCode": "const response = $input.first().json;\nconst manualControl = response.data?.manual_control ?? {};\nconst controlState = manualControl.control_state ?? {};\nconst run = manualControl.run?.run ?? {};\n\nreturn [\n  {\n    json: {\n      action: 'pause',\n      ok: response.ok,\n      request_id: response.request_id,\n      operation: manualControl.operation ?? null,\n      run_id: run.id ?? controlState.run_id ?? null,\n      run_status: run.status ?? controlState.run_status ?? null,\n      queue_status: controlState.queue_status ?? null,\n      paused: controlState.paused ?? null,\n      terminal: controlState.terminal ?? null,\n      latest_manual_transition_type: controlState.latest_manual_transition_type ?? null,\n      latest_resume_mode: controlState.latest_resume_mode ?? null,\n      raw_response: response,\n    },\n  },\n];"
+        },
+        "id": "b4e55246-adf0-45ec-a0ab-e610a99f9d09",
+        "name": "Format Pause Result",
+        "type": "n8n-nodes-base.code",
+        "typeVersion": 2,
+        "position": [
+          1900,
+          400
+        ]
+      },
+      {
+        "parameters": {
+          "jsCode": "const response = $input.first().json;\nconst manualControl = response.data?.manual_control ?? {};\nconst controlState = manualControl.control_state ?? {};\nconst run = manualControl.run?.run ?? {};\n\nreturn [\n  {\n    json: {\n      action: 'resume',\n      ok: response.ok,\n      request_id: response.request_id,\n      operation: manualControl.operation ?? null,\n      run_id: run.id ?? controlState.run_id ?? null,\n      run_status: run.status ?? controlState.run_status ?? null,\n      queue_status: controlState.queue_status ?? null,\n      paused: controlState.paused ?? null,\n      terminal: controlState.terminal ?? null,\n      latest_manual_transition_type: controlState.latest_manual_transition_type ?? null,\n      latest_resume_mode: controlState.latest_resume_mode ?? null,\n      raw_response: response,\n    },\n  },\n];"
+        },
+        "id": "12e16d8f-6b01-422f-9f78-6483b88cf17a",
+        "name": "Format Resume Result",
+        "type": "n8n-nodes-base.code",
+        "typeVersion": 2,
+        "position": [
+          2180,
+          520
+        ]
+      },
+      {
+        "parameters": {
+          "jsCode": "const response = $input.first().json;\nconst manualControl = response.data?.manual_control ?? {};\nconst controlState = manualControl.control_state ?? {};\nconst run = manualControl.run?.run ?? {};\n\nreturn [\n  {\n    json: {\n      action: 'force_stop',\n      ok: response.ok,\n      request_id: response.request_id,\n      operation: manualControl.operation ?? null,\n      run_id: run.id ?? controlState.run_id ?? null,\n      run_status: run.status ?? controlState.run_status ?? null,\n      queue_status: controlState.queue_status ?? null,\n      paused: controlState.paused ?? null,\n      terminal: controlState.terminal ?? null,\n      latest_manual_transition_type: controlState.latest_manual_transition_type ?? null,\n      latest_resume_mode: controlState.latest_resume_mode ?? null,\n      raw_response: response,\n    },\n  },\n];"
+        },
+        "id": "a6b95f2e-f91d-4fdc-8d66-3df8e6180cb3",
+        "name": "Format Force Stop Result",
+        "type": "n8n-nodes-base.code",
+        "typeVersion": 2,
+        "position": [
+          2180,
+          700
+        ]
+      }
+    ],
+    "connections": {
+      "Manual Trigger": {
+        "main": [
+          [
+            {
+              "node": "Edit Fields",
+              "type": "main",
+              "index": 0
+            }
+          ]
+        ]
+      },
+      "Edit Fields": {
+        "main": [
+          [
+            {
+              "node": "Build Manual Control Request",
+              "type": "main",
+              "index": 0
+            }
+          ]
+        ]
+      },
+      "Build Manual Control Request": {
+        "main": [
+          [
+            {
+              "node": "Action is Show Control State?",
+              "type": "main",
+              "index": 0
+            }
+          ]
+        ]
+      },
+      "Action is Show Control State?": {
+        "main": [
+          [
+            {
+              "node": "HTTP Request - Show Control State",
+              "type": "main",
+              "index": 0
+            }
+          ],
+          [
+            {
+              "node": "Action is Pause?",
+              "type": "main",
+              "index": 0
+            }
+          ]
+        ]
+      },
+      "Action is Pause?": {
+        "main": [
+          [
+            {
+              "node": "HTTP Request - Pause",
+              "type": "main",
+              "index": 0
+            }
+          ],
+          [
+            {
+              "node": "Action is Resume?",
+              "type": "main",
+              "index": 0
+            }
+          ]
+        ]
+      },
+      "Action is Resume?": {
+        "main": [
+          [
+            {
+              "node": "HTTP Request - Resume",
+              "type": "main",
+              "index": 0
+            }
+          ],
+          [
+            {
+              "node": "HTTP Request - Force Stop",
+              "type": "main",
+              "index": 0
+            }
+          ]
+        ]
+      },
+      "HTTP Request - Show Control State": {
+        "main": [
+          [
+            {
+              "node": "Format Control State",
+              "type": "main",
+              "index": 0
+            }
+          ]
+        ]
+      },
+      "HTTP Request - Pause": {
+        "main": [
+          [
+            {
+              "node": "Format Pause Result",
+              "type": "main",
+              "index": 0
+            }
+          ]
+        ]
+      },
+      "HTTP Request - Resume": {
+        "main": [
+          [
+            {
+              "node": "Format Resume Result",
+              "type": "main",
+              "index": 0
+            }
+          ]
+        ]
+      },
+      "HTTP Request - Force Stop": {
+        "main": [
+          [
+            {
+              "node": "Format Force Stop Result",
+              "type": "main",
+              "index": 0
+            }
+          ]
+        ]
+      }
+    }
+  }
+]

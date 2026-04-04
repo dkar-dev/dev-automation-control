@@ -1,0 +1,178 @@
+[
+  {
+    "id": "controlPlaneV2RunWorkerUntilIdleV1",
+    "name": "Control Plane v2 - Run Worker Until Idle v1",
+    "active": false,
+    "isArchived": false,
+    "settings": {
+      "executionOrder": "v1"
+    },
+    "pinData": {},
+    "versionId": "5cf2ec62-00b7-4d66-a144-814b3504fd3d",
+    "versionMetadata": null,
+    "nodes": [
+      {
+        "parameters": {},
+        "id": "9678e253-5506-4ccb-bf2f-38533b8a5d30",
+        "name": "Manual Trigger",
+        "type": "n8n-nodes-base.manualTrigger",
+        "typeVersion": 1,
+        "position": [
+          220,
+          280
+        ]
+      },
+      {
+        "parameters": {
+          "assignments": {
+            "assignments": [
+              {
+                "id": "5524a9fe-3f2d-42d2-9a7f-d7e952dcb741",
+                "name": "base_url",
+                "type": "string",
+                "value": "={{ $env.N8N_CONTROL_PLANE_BASE_URL || 'http://host.docker.internal:8788' }}"
+              },
+              {
+                "id": "d0d7cf8f-621d-4fa6-ba56-1764be57ced0",
+                "name": "max_ticks",
+                "type": "string",
+                "value": "25"
+              },
+              {
+                "id": "498dd17c-e58c-4646-b594-571af69b8b1b",
+                "name": "max_claims",
+                "type": "string",
+                "value": ""
+              },
+              {
+                "id": "7d47b651-68c3-4d75-bce0-97d36035fdb7",
+                "name": "max_flows",
+                "type": "string",
+                "value": ""
+              },
+              {
+                "id": "e67f1a31-17df-4e4b-8c7a-50eb9102fd2f",
+                "name": "max_wall_clock_seconds",
+                "type": "string",
+                "value": "60"
+              },
+              {
+                "id": "5b3651fe-37b5-4adc-aa04-6e93795fe84d",
+                "name": "mode",
+                "type": "string",
+                "value": ""
+              },
+              {
+                "id": "4fa4fc2c-cdaf-470f-a113-e31e2cfaf2ec",
+                "name": "claim_now",
+                "type": "string",
+                "value": ""
+              }
+            ]
+          },
+          "options": {}
+        },
+        "id": "2f4d9aaf-bf05-41fd-b7d3-2497fd4ce61d",
+        "name": "Edit Fields",
+        "type": "n8n-nodes-base.set",
+        "typeVersion": 3.4,
+        "position": [
+          500,
+          280
+        ]
+      },
+      {
+        "parameters": {
+          "jsCode": "const input = $input.first().json;\n\nconst requiredText = (fieldName) => {\n  const value = String(input[fieldName] ?? '').trim();\n  if (!value) {\n    throw new Error(`${fieldName} is required`);\n  }\n  return value;\n};\n\nconst optionalText = (fieldName) => {\n  const value = String(input[fieldName] ?? '').trim();\n  return value || undefined;\n};\n\nconst optionalInt = (fieldName) => {\n  const value = optionalText(fieldName);\n  if (value === undefined) {\n    return undefined;\n  }\n  const parsed = Number.parseInt(value, 10);\n  if (!Number.isFinite(parsed)) {\n    throw new Error(`${fieldName} must be an integer when provided`);\n  }\n  return parsed;\n};\n\nconst optionalFloat = (fieldName) => {\n  const value = optionalText(fieldName);\n  if (value === undefined) {\n    return undefined;\n  }\n  const parsed = Number.parseFloat(value);\n  if (!Number.isFinite(parsed)) {\n    throw new Error(`${fieldName} must be numeric when provided`);\n  }\n  return parsed;\n};\n\nconst baseUrl = requiredText('base_url').replace(/\\/$/, '');\nconst requestBody = {};\n\nconst maxTicks = optionalInt('max_ticks');\nif (maxTicks !== undefined) {\n  requestBody.max_ticks = maxTicks;\n}\n\nconst maxClaims = optionalInt('max_claims');\nif (maxClaims !== undefined) {\n  requestBody.max_claims = maxClaims;\n}\n\nconst maxFlows = optionalInt('max_flows');\nif (maxFlows !== undefined) {\n  requestBody.max_flows = maxFlows;\n}\n\nconst maxWallClockSeconds = optionalFloat('max_wall_clock_seconds');\nif (maxWallClockSeconds !== undefined) {\n  requestBody.max_wall_clock_seconds = maxWallClockSeconds;\n}\n\nconst mode = optionalText('mode');\nif (mode !== undefined) {\n  requestBody.mode = mode;\n}\n\nconst claimNow = optionalText('claim_now');\nif (claimNow !== undefined) {\n  requestBody.claim_now = claimNow;\n}\n\nreturn [\n  {\n    json: {\n      base_url: baseUrl,\n      request_body: requestBody,\n    },\n  },\n];"
+        },
+        "id": "fd026f6f-d4e3-4082-8415-16f549cc2878",
+        "name": "Build Worker Payload",
+        "type": "n8n-nodes-base.code",
+        "typeVersion": 2,
+        "position": [
+          780,
+          280
+        ]
+      },
+      {
+        "parameters": {
+          "method": "POST",
+          "url": "={{ $json.base_url + '/v1/worker/run-until-idle' }}",
+          "authentication": "none",
+          "sendBody": true,
+          "contentType": "json",
+          "specifyBody": "json",
+          "jsonBody": "={{ $json.request_body }}",
+          "options": {}
+        },
+        "id": "3bce9320-beb9-46fe-8e72-8b237db1f899",
+        "name": "HTTP Request",
+        "type": "n8n-nodes-base.httpRequest",
+        "typeVersion": 4.4,
+        "position": [
+          1060,
+          280
+        ]
+      },
+      {
+        "parameters": {
+          "jsCode": "const response = $input.first().json;\nconst workerLoop = response.data?.worker_loop ?? {};\nconst tickResults = Array.isArray(workerLoop.tick_results) ? workerLoop.tick_results : [];\nconst processedRunIds = [...new Set(tickResults.map((tick) => tick.claimed_run_id).filter(Boolean))];\nconst lastTick = tickResults.length > 0 ? tickResults[tickResults.length - 1] : null;\n\nreturn [\n  {\n    json: {\n      ok: response.ok,\n      request_id: response.request_id,\n      ended_reason: workerLoop.ended_reason ?? null,\n      ticks_executed: workerLoop.ticks_executed ?? 0,\n      claims_processed: workerLoop.claims_processed ?? 0,\n      unique_flows_processed: workerLoop.unique_flows_processed ?? 0,\n      runs_progressed: workerLoop.runs_progressed ?? 0,\n      runs_failed_technically: workerLoop.runs_failed_technically ?? 0,\n      ingestion_failures: workerLoop.ingestion_failures ?? 0,\n      runs_stopped: workerLoop.runs_stopped ?? 0,\n      follow_ups_created: workerLoop.follow_ups_created ?? 0,\n      processed_run_ids: processedRunIds,\n      last_tick_status: lastTick?.status ?? null,\n      last_tick_final_run_status: lastTick?.final_run_status ?? null,\n      raw_response: response,\n    },\n  },\n];"
+        },
+        "id": "b5e3614d-a895-4cc7-b6a5-22df7da7fe61",
+        "name": "Format Worker Result",
+        "type": "n8n-nodes-base.code",
+        "typeVersion": 2,
+        "position": [
+          1340,
+          280
+        ]
+      }
+    ],
+    "connections": {
+      "Manual Trigger": {
+        "main": [
+          [
+            {
+              "node": "Edit Fields",
+              "type": "main",
+              "index": 0
+            }
+          ]
+        ]
+      },
+      "Edit Fields": {
+        "main": [
+          [
+            {
+              "node": "Build Worker Payload",
+              "type": "main",
+              "index": 0
+            }
+          ]
+        ]
+      },
+      "Build Worker Payload": {
+        "main": [
+          [
+            {
+              "node": "HTTP Request",
+              "type": "main",
+              "index": 0
+            }
+          ]
+        ]
+      },
+      "HTTP Request": {
+        "main": [
+          [
+            {
+              "node": "Format Worker Result",
+              "type": "main",
+              "index": 0
+            }
+          ]
+        ]
+      }
+    }
+  }
+]

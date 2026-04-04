@@ -1,0 +1,226 @@
+[
+  {
+    "id": "controlPlaneV2SubmitBoundedTaskV1",
+    "name": "Control Plane v2 - Submit Bounded Task v1",
+    "active": false,
+    "isArchived": false,
+    "settings": {
+      "executionOrder": "v1"
+    },
+    "pinData": {},
+    "versionId": "afba57df-e570-4a63-9221-c5db8b1f2e71",
+    "versionMetadata": null,
+    "nodes": [
+      {
+        "parameters": {},
+        "id": "32f9bcab-08c2-4d04-b6a7-f249dbe15f59",
+        "name": "Manual Trigger",
+        "type": "n8n-nodes-base.manualTrigger",
+        "typeVersion": 1,
+        "position": [
+          220,
+          280
+        ]
+      },
+      {
+        "parameters": {
+          "assignments": {
+            "assignments": [
+              {
+                "id": "6c2148e2-0f1b-4af6-b1e3-c65fcf6d912c",
+                "name": "base_url",
+                "type": "string",
+                "value": "={{ $env.N8N_CONTROL_PLANE_BASE_URL || 'http://host.docker.internal:8788' }}"
+              },
+              {
+                "id": "98aab4a7-7c7c-4eb2-b640-c5cb23bf04be",
+                "name": "project_key",
+                "type": "string",
+                "value": "sample-project"
+              },
+              {
+                "id": "4b73557f-b89a-4a94-8590-2e9bf00fbba3",
+                "name": "task_text",
+                "type": "string",
+                "value": "Implement the requested bounded task through the control plane HTTP API."
+              },
+              {
+                "id": "de4c8a8e-08d4-4cf1-931d-c16476e79f31",
+                "name": "project_profile",
+                "type": "string",
+                "value": "default"
+              },
+              {
+                "id": "974f761b-6390-40b8-b5c8-8fbb8fef3c39",
+                "name": "workflow_id",
+                "type": "string",
+                "value": "build"
+              },
+              {
+                "id": "830c17d7-d49a-4582-8e17-6d07af51989a",
+                "name": "milestone",
+                "type": "string",
+                "value": "n8n-binding-v1"
+              },
+              {
+                "id": "db60fe28-b8cf-4428-87ff-e71bf88ae7ba",
+                "name": "priority_class",
+                "type": "string",
+                "value": "interactive"
+              },
+              {
+                "id": "7fe3bec2-92a8-473c-a190-d7f36e76effa",
+                "name": "instruction_profile",
+                "type": "string",
+                "value": "default"
+              },
+              {
+                "id": "ec5dd0c8-6963-40cc-b646-0abfe1846a87",
+                "name": "instruction_overlays",
+                "type": "string",
+                "value": "strict-review"
+              },
+              {
+                "id": "2c9206c8-6d40-434f-a5e3-ac8cf1f1fd60",
+                "name": "source",
+                "type": "string",
+                "value": "n8n-control-plane-v2"
+              },
+              {
+                "id": "ac0dd2d0-8a43-4726-9bf1-586821f44181",
+                "name": "thread_label",
+                "type": "string",
+                "value": "sample-project-n8n"
+              },
+              {
+                "id": "4b241613-1fd6-4a64-95f3-8188d93c1f13",
+                "name": "constraints",
+                "type": "string",
+                "value": "Only use the control plane HTTP API boundary."
+              },
+              {
+                "id": "4fa75fc1-6814-4d08-80fd-9fbcc68af89b",
+                "name": "expected_output",
+                "type": "string",
+                "value": "Return run_id, flow_id, and queue status."
+              },
+              {
+                "id": "d0dced3b-cd1b-4816-a3f7-e37f463ef81c",
+                "name": "artifact_root",
+                "type": "string",
+                "value": ""
+              },
+              {
+                "id": "12efc981-e1d1-4f45-b77f-0559df8570bc",
+                "name": "workspace_root",
+                "type": "string",
+                "value": ""
+              }
+            ]
+          },
+          "options": {}
+        },
+        "id": "eb514c74-5f4d-4969-af58-404091d57fb8",
+        "name": "Edit Fields",
+        "type": "n8n-nodes-base.set",
+        "typeVersion": 3.4,
+        "position": [
+          500,
+          280
+        ]
+      },
+      {
+        "parameters": {
+          "jsCode": "const input = $input.first().json;\n\nconst requiredText = (fieldName) => {\n  const value = String(input[fieldName] ?? '').trim();\n  if (!value) {\n    throw new Error(`${fieldName} is required`);\n  }\n  return value;\n};\n\nconst optionalText = (fieldName) => {\n  const value = String(input[fieldName] ?? '').trim();\n  return value || undefined;\n};\n\nconst splitLinesOrCsv = (value) => {\n  if (value === undefined || value === null) {\n    return undefined;\n  }\n  const text = String(value)\n    .split(/\\r?\\n|,/)\n    .map((entry) => entry.trim())\n    .filter(Boolean);\n  return text.length > 0 ? text : undefined;\n};\n\nconst baseUrl = requiredText('base_url').replace(/\\/$/, '');\nconst requestBody = {\n  project_key: requiredText('project_key'),\n  task_text: requiredText('task_text'),\n  project_profile: requiredText('project_profile'),\n  workflow_id: requiredText('workflow_id'),\n  milestone: requiredText('milestone'),\n  priority_class: requiredText('priority_class'),\n};\n\nconst optionalScalarFields = [\n  'instruction_profile',\n  'source',\n  'thread_label',\n  'artifact_root',\n  'workspace_root',\n];\nfor (const fieldName of optionalScalarFields) {\n  const value = optionalText(fieldName);\n  if (value !== undefined) {\n    requestBody[fieldName] = value;\n  }\n}\n\nconst instructionOverlays = splitLinesOrCsv(input.instruction_overlays);\nif (instructionOverlays !== undefined) {\n  requestBody.instruction_overlays = instructionOverlays;\n}\n\nconst constraints = splitLinesOrCsv(input.constraints);\nif (constraints !== undefined) {\n  requestBody.constraints = constraints;\n}\n\nconst expectedOutput = splitLinesOrCsv(input.expected_output);\nif (expectedOutput !== undefined) {\n  requestBody.expected_output = expectedOutput;\n}\n\nreturn [\n  {\n    json: {\n      base_url: baseUrl,\n      request_body: requestBody,\n    },\n  },\n];"
+        },
+        "id": "706295d0-8053-4baf-8f3e-e7605b6a01b0",
+        "name": "Build Submit Payload",
+        "type": "n8n-nodes-base.code",
+        "typeVersion": 2,
+        "position": [
+          780,
+          280
+        ]
+      },
+      {
+        "parameters": {
+          "method": "POST",
+          "url": "={{ $json.base_url + '/v1/tasks/submit' }}",
+          "authentication": "none",
+          "sendBody": true,
+          "contentType": "json",
+          "specifyBody": "json",
+          "jsonBody": "={{ $json.request_body }}",
+          "options": {}
+        },
+        "id": "b70b6281-733f-43f2-89c5-10d31f0ac0d2",
+        "name": "HTTP Request",
+        "type": "n8n-nodes-base.httpRequest",
+        "typeVersion": 4.4,
+        "position": [
+          1060,
+          280
+        ]
+      },
+      {
+        "parameters": {
+          "jsCode": "const response = $input.first().json;\nconst submittedTask = response.data?.submitted_task;\nconst run = submittedTask?.run_details?.run ?? {};\nconst queueItem = run.queue_item ?? {};\n\nreturn [\n  {\n    json: {\n      ok: response.ok,\n      request_id: response.request_id,\n      run_id: run.id ?? null,\n      flow_id: run.flow_id ?? null,\n      queue_item_id: queueItem.id ?? null,\n      queue_status: queueItem.status ?? null,\n      run_status: run.status ?? null,\n      project_key: submittedTask?.request?.project_key ?? null,\n      workflow_id: submittedTask?.request?.workflow_id ?? null,\n      milestone: submittedTask?.request?.milestone ?? null,\n      submitted_at: submittedTask?.submitted_at ?? null,\n      runtime_context: submittedTask?.runtime_context ?? null,\n      raw_response: response,\n    },\n  },\n];"
+        },
+        "id": "818d58d4-e0c8-48dd-b379-fa0751dde708",
+        "name": "Format Submit Result",
+        "type": "n8n-nodes-base.code",
+        "typeVersion": 2,
+        "position": [
+          1340,
+          280
+        ]
+      }
+    ],
+    "connections": {
+      "Manual Trigger": {
+        "main": [
+          [
+            {
+              "node": "Edit Fields",
+              "type": "main",
+              "index": 0
+            }
+          ]
+        ]
+      },
+      "Edit Fields": {
+        "main": [
+          [
+            {
+              "node": "Build Submit Payload",
+              "type": "main",
+              "index": 0
+            }
+          ]
+        ]
+      },
+      "Build Submit Payload": {
+        "main": [
+          [
+            {
+              "node": "HTTP Request",
+              "type": "main",
+              "index": 0
+            }
+          ]
+        ]
+      },
+      "HTTP Request": {
+        "main": [
+          [
+            {
+              "node": "Format Submit Result",
+              "type": "main",
+              "index": 0
+            }
+          ]
+        ]
+      }
+    }
+  }
+]
