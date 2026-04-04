@@ -3,7 +3,7 @@
 ## Scope
 - This is the thin v1 transport boundary for the existing Control Plane v2 primitives.
 - It is intended for localhost-only use from `n8n`, local automations, and other single-machine triggers.
-- It does not replace the existing CLI utilities; it routes requests into the same intake, worker, manual-control, and cleanup modules.
+- It does not replace the existing CLI utilities; it routes requests into the same intake, bounded-contract generation, worker, manual-control, and cleanup modules.
 
 ## Chosen server stack
 - Python stdlib `http.server.ThreadingHTTPServer`
@@ -107,6 +107,14 @@ Notes:
 `GET /v1/tasks/{run_id}`
 - Show the persisted submission/runtime-context manifests for one submitted run.
 
+`POST /v1/contracts/generate`
+- Generate one bounded contract from approved policy/templates.
+- Uses the same engine as `scripts/generate-bounded-contract`.
+- Uses server default `artifact_root` when the request omits it.
+
+`GET /v1/contracts/{contract_id}`
+- Show one persisted bounded contract, including normalized JSON, prompt text, manifest, and linked artifacts.
+
 `POST /v1/worker/tick`
 - Run one worker tick.
 - Request body may be `{}`.
@@ -186,6 +194,25 @@ curl -s http://127.0.0.1:8788/v1/worker/tick \
   -d '{}'
 ```
 
+Generate one bounded contract:
+
+```bash
+curl -s http://127.0.0.1:8788/v1/contracts/generate \
+  -H 'Content-Type: application/json' \
+  -d '{
+    "run_id": "<run-id>",
+    "contract_type": "implementation_step",
+    "runtime_context": {
+      "task_text": "Implement the approved bounded task.",
+      "project_repo_path": "/home/dkar/workspace/project",
+      "executor_worktree_path": "/home/dkar/workspace/runtime/worktrees/executor",
+      "reviewer_worktree_path": "/home/dkar/workspace/runtime/worktrees/reviewer",
+      "instructions_repo_path": "/home/dkar/workspace/instructions",
+      "instruction_profile": "default"
+    }
+  }'
+```
+
 Resume in stabilize mode:
 
 ```bash
@@ -250,11 +277,19 @@ cd /home/dkar/workspace/control
 ./scripts/smoke-control-plane-v2-n8n-binding.sh
 ```
 
+Focused bounded-contract wrapper:
+
+```bash
+cd /home/dkar/workspace/control
+./scripts/smoke-control-plane-v2-contracts.sh
+```
+
 This smoke verifies:
 - local server startup
 - `GET /v1/health`
 - malformed JSON failure
 - task submit/list/show through HTTP
+- bounded contract generate/show through HTTP
 - worker tick and run-until-idle through HTTP
 - pause/resume/force-stop through HTTP
 - cleanup dry-run through HTTP

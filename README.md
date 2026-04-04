@@ -15,6 +15,7 @@ This repo is the control plane for orchestration between ChatGPT Web, n8n, Playw
 - The v2 scaffold now also includes a bounded task intake / run submission layer v1, so bounded tasks can be submitted as one normalized entrypoint instead of hand-assembling root runs plus runtime context.
 - The v2 scaffold now also includes a thin localhost-only HTTP API v1, so `n8n` and other local automations can call intake, worker, manual-control, and cleanup primitives over stable JSON endpoints.
 - The v2 scaffold now also includes an importable n8n workflow package v1 over that HTTP API, so n8n can stay a thin orchestration client instead of embedding control-plane logic.
+- The v2 scaffold now also includes a bounded-contract generation engine v1, so approved policy/templates can be rendered into normalized machine-readable contracts and Codex-ready prompts without changing architecture or workflow semantics.
 - Migration from legacy pipeline to v2 is not completed yet.
 - The first executable v2 utilities now live in:
   - `scripts/validate-project-package`
@@ -57,6 +58,9 @@ This repo is the control plane for orchestration between ChatGPT Web, n8n, Playw
   - `scripts/show-cleanup-status`
   - `scripts/run-control-plane-api`
   - `scripts/show-control-plane-config`
+  - `scripts/list-contract-templates`
+  - `scripts/generate-bounded-contract`
+  - `scripts/show-bounded-contract`
   - `scripts/smoke-control-plane-v2.sh`
   - `scripts/smoke-control-plane-v2-sqlite-migrations.sh`
   - `scripts/smoke-control-plane-v2-dispatch.sh`
@@ -65,11 +69,13 @@ This repo is the control plane for orchestration between ChatGPT Web, n8n, Playw
   - `scripts/smoke-control-plane-v2-cleanup.sh`
   - `scripts/smoke-control-plane-v2-intake.sh`
   - `scripts/smoke-control-plane-v2-api.sh`
+  - `scripts/smoke-control-plane-v2-contracts.sh`
   - `scripts/smoke-control-plane-v2-n8n-binding.sh`
 - Operator/dev usage notes for those utilities are in:
   - [`docs/control-plane-v2/bootstrap-and-validation.md`](/home/dkar/workspace/control/docs/control-plane-v2/bootstrap-and-validation.md)
   - [`docs/control-plane-v2/manual-dispatch.md`](/home/dkar/workspace/control/docs/control-plane-v2/manual-dispatch.md)
   - [`docs/control-plane-v2/local-http-api.md`](/home/dkar/workspace/control/docs/control-plane-v2/local-http-api.md)
+  - [`docs/control-plane-v2/bounded-contract-generation.md`](/home/dkar/workspace/control/docs/control-plane-v2/bounded-contract-generation.md)
   - [`docs/n8n/README.md`](/home/dkar/workspace/control/docs/n8n/README.md)
 
 ## n8n HTTP API binding v1

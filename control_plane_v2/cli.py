@@ -92,6 +92,13 @@ from .http_api import (
     create_control_plane_api_config,
     serve_control_plane_api,
 )
+from .bounded_contracts import (
+    CONTRACT_TAXONOMY,
+    BoundedContractError,
+    generate_bounded_contract,
+    list_contract_templates,
+    show_bounded_contract,
+)
 from .task_intake import (
     TaskIntakeError,
     list_submitted_tasks,
@@ -1588,6 +1595,184 @@ def main_list_submitted_tasks(argv: list[str] | None = None) -> int:
     return 0
 
 
+def main_generate_bounded_contract(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(description="Generate one bounded contract from approved project policy/templates.")
+    parser.add_argument("--sqlite-db", required=True, help="SQLite database path bootstrapped with init-sqlite-v1")
+    parser.add_argument("--request-json", help="Optional JSON file (or - for stdin) with the full generation payload")
+    parser.add_argument("--project-key", help="Registered project key")
+    parser.add_argument("--workflow-id", help="Workflow identifier")
+    parser.add_argument("--project-profile", help="Immutable project profile")
+    parser.add_argument("--run-id", help="Optional runtime run identifier")
+    parser.add_argument("--step-run-id", help="Optional runtime step_run identifier")
+    parser.add_argument(
+        "--contract-type",
+        choices=CONTRACT_TAXONOMY,
+        help="Requested bounded contract taxonomy type",
+    )
+    parser.add_argument("--template-key", help="Optional explicit template key override")
+    parser.add_argument("--current-state-json", help="Optional JSON file (or - for stdin) with current_state")
+    parser.add_argument("--runtime-context-json", help="Optional JSON file (or - for stdin) with runtime_context")
+    parser.add_argument("--operator-request-json", help="Optional JSON file (or - for stdin) with operator_request")
+    parser.add_argument("--artifact-root", help="Optional artifact root override")
+    parser.add_argument("--json", action="store_true", help="Print machine-readable JSON output")
+    args = parser.parse_args(argv)
+
+    try:
+        payload = _load_json_argument(args.request_json) if args.request_json else {}
+        for key in ("project_key", "workflow_id", "project_profile", "run_id", "step_run_id", "contract_type", "template_key", "artifact_root"):
+            value = getattr(args, key)
+            if value is not None:
+                payload[key] = value
+        if args.current_state_json:
+            payload["current_state"] = _load_json_argument(args.current_state_json)
+        if args.runtime_context_json:
+            payload["runtime_context"] = _load_json_argument(args.runtime_context_json)
+        if args.operator_request_json:
+            payload["operator_request"] = _load_json_argument(args.operator_request_json)
+        result = generate_bounded_contract(args.sqlite_db, payload)
+    except DispatchAdapterError as exc:
+        payload = {
+            "ok": False,
+            "stage": "bounded_contracts",
+            "error": {
+                "code": exc.code,
+                "message": exc.message,
+                "database_path": str(exc.database_path),
+                "details": exc.details,
+            },
+        }
+        if args.json:
+            print(json.dumps(payload, ensure_ascii=False, indent=2), file=sys.stderr)
+        else:
+            print(f"Bounded contract generation input failed: {exc.message}", file=sys.stderr)
+            if exc.details:
+                print(f"Details: {exc.details}", file=sys.stderr)
+        return 1
+    except BoundedContractError as exc:
+        payload = {"ok": False, "stage": "bounded_contracts", "error": exc.to_dict()}
+        if args.json:
+            print(json.dumps(payload, ensure_ascii=False, indent=2), file=sys.stderr)
+        else:
+            print(f"Bounded contract generation failed: {exc.message}", file=sys.stderr)
+            if exc.details:
+                print(f"Details: {exc.details}", file=sys.stderr)
+        return 1
+
+    payload = {
+        "ok": True,
+        "sqlite_db": str(Path(args.sqlite_db).expanduser().resolve()),
+        "bounded_contract": result.to_dict(),
+    }
+    if args.json:
+        print(json.dumps(payload, ensure_ascii=False, indent=2))
+    else:
+        print(f"Contract: {result.contract_id}")
+        print(f"Type: {result.contract_type}")
+        print(f"Template: {result.template_key}")
+        print(f"Target role: {result.target_role}")
+        print(f"Prompt: {next((artifact.filesystem_path for artifact in result.artifacts if artifact.artifact_kind == 'bounded_contract_prompt'), 'embedded')}")
+    return 0
+
+
+def main_show_bounded_contract(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(description="Show one persisted bounded contract manifest and artifacts.")
+    parser.add_argument("--sqlite-db", required=True, help="SQLite database path bootstrapped with init-sqlite-v1")
+    parser.add_argument("contract_id", help="Bounded contract identifier")
+    parser.add_argument("--json", action="store_true", help="Print machine-readable JSON output")
+    args = parser.parse_args(argv)
+
+    try:
+        result = show_bounded_contract(args.sqlite_db, args.contract_id)
+    except BoundedContractError as exc:
+        payload = {"ok": False, "stage": "bounded_contracts", "error": exc.to_dict()}
+        if args.json:
+            print(json.dumps(payload, ensure_ascii=False, indent=2), file=sys.stderr)
+        else:
+            print(f"Bounded contract lookup failed: {exc.message}", file=sys.stderr)
+            if exc.details:
+                print(f"Details: {exc.details}", file=sys.stderr)
+        return 1
+
+    payload = {
+        "ok": True,
+        "sqlite_db": str(Path(args.sqlite_db).expanduser().resolve()),
+        "bounded_contract": result.to_dict(),
+    }
+    if args.json:
+        print(json.dumps(payload, ensure_ascii=False, indent=2))
+    else:
+        print(f"Contract: {result.contract_id}")
+        print(f"Type: {result.contract_type}")
+        print(f"Project: {result.project_key}")
+        print(f"Artifacts: {len(result.artifacts)}")
+    return 0
+
+
+def main_list_contract_templates(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(description="List approved bounded-contract templates for a project package.")
+    parser.add_argument("--sqlite-db", help="SQLite database path bootstrapped with init-sqlite-v1")
+    parser.add_argument("--project-key", help="Registered project key used with --sqlite-db")
+    parser.add_argument("--package-root", help="Optional direct project package root")
+    parser.add_argument("--json", action="store_true", help="Print machine-readable JSON output")
+    args = parser.parse_args(argv)
+
+    try:
+        result = list_contract_templates(
+            database_path=args.sqlite_db,
+            project_key=args.project_key,
+            package_root=args.package_root,
+        )
+    except ProjectPackageValidationFailed as exc:
+        payload = {
+            "ok": False,
+            "stage": "validation",
+            "package_root": str(exc.package_root),
+            "errors": [error.to_dict() for error in exc.errors],
+        }
+        if args.json:
+            print(json.dumps(payload, ensure_ascii=False, indent=2), file=sys.stderr)
+        else:
+            print(f"Project package validation failed: {exc.package_root}", file=sys.stderr)
+            for error in exc.errors:
+                print(_format_validation_error(error), file=sys.stderr)
+        return 1
+    except (BoundedContractError, ValueError) as exc:
+        if isinstance(exc, BoundedContractError):
+            payload = {"ok": False, "stage": "bounded_contracts", "error": exc.to_dict()}
+            message = exc.message
+            details = exc.details
+        else:
+            payload = {
+                "ok": False,
+                "stage": "bounded_contracts",
+                "error": {"code": "CONTRACT_GENERATION_INVALID", "message": str(exc), "details": None},
+            }
+            message = str(exc)
+            details = None
+        if args.json:
+            print(json.dumps(payload, ensure_ascii=False, indent=2), file=sys.stderr)
+        else:
+            print(f"Bounded contract template listing failed: {message}", file=sys.stderr)
+            if details:
+                print(f"Details: {details}", file=sys.stderr)
+        return 1
+
+    payload = {
+        "ok": True,
+        "sqlite_db": str(Path(args.sqlite_db).expanduser().resolve()) if args.sqlite_db else None,
+        "bounded_contract_policy": result,
+    }
+    if args.json:
+        print(json.dumps(payload, ensure_ascii=False, indent=2))
+    else:
+        print(f"Project: {result['project_key']}")
+        print(f"Storage model: {result['storage_model']}")
+        print(f"Templates: {len(result['templates'])}")
+        for template_key, template in result["templates"].items():
+            print(f"- {template_key} | {template['contract_type']} | target_role={template['target_role']}")
+    return 0
+
+
 def main_list_flow_runs(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="List all runs inside one flow_id chain.")
     parser.add_argument("--sqlite-db", required=True, help="SQLite database path bootstrapped with init-sqlite-v1")
@@ -2144,6 +2329,30 @@ def main() -> int:
     worker_until_idle_parser = subparsers.add_parser("run-worker-until-idle")
     worker_until_idle_parser.add_argument("args", nargs=argparse.REMAINDER)
 
+    run_api_parser = subparsers.add_parser("run-control-plane-api")
+    run_api_parser.add_argument("args", nargs=argparse.REMAINDER)
+
+    show_api_config_parser = subparsers.add_parser("show-control-plane-config")
+    show_api_config_parser.add_argument("args", nargs=argparse.REMAINDER)
+
+    submit_task_parser = subparsers.add_parser("submit-bounded-task")
+    submit_task_parser.add_argument("args", nargs=argparse.REMAINDER)
+
+    show_submitted_task_parser = subparsers.add_parser("show-submitted-task")
+    show_submitted_task_parser.add_argument("args", nargs=argparse.REMAINDER)
+
+    list_submitted_tasks_parser = subparsers.add_parser("list-submitted-tasks")
+    list_submitted_tasks_parser.add_argument("args", nargs=argparse.REMAINDER)
+
+    generate_bounded_contract_parser = subparsers.add_parser("generate-bounded-contract")
+    generate_bounded_contract_parser.add_argument("args", nargs=argparse.REMAINDER)
+
+    show_bounded_contract_parser = subparsers.add_parser("show-bounded-contract")
+    show_bounded_contract_parser.add_argument("args", nargs=argparse.REMAINDER)
+
+    list_contract_templates_parser = subparsers.add_parser("list-contract-templates")
+    list_contract_templates_parser.add_argument("args", nargs=argparse.REMAINDER)
+
     args = parser.parse_args()
 
     if args.command == "validate-project-package":
@@ -2210,6 +2419,22 @@ def main() -> int:
         return main_run_worker_tick(args.args)
     if args.command == "run-worker-until-idle":
         return main_run_worker_until_idle(args.args)
+    if args.command == "run-control-plane-api":
+        return main_run_control_plane_api(args.args)
+    if args.command == "show-control-plane-config":
+        return main_show_control_plane_config(args.args)
+    if args.command == "submit-bounded-task":
+        return main_submit_bounded_task(args.args)
+    if args.command == "show-submitted-task":
+        return main_show_submitted_task(args.args)
+    if args.command == "list-submitted-tasks":
+        return main_list_submitted_tasks(args.args)
+    if args.command == "generate-bounded-contract":
+        return main_generate_bounded_contract(args.args)
+    if args.command == "show-bounded-contract":
+        return main_show_bounded_contract(args.args)
+    if args.command == "list-contract-templates":
+        return main_list_contract_templates(args.args)
 
     print(f"Unknown command: {args.command}", file=sys.stderr)
     return 1

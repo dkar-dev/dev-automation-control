@@ -9,6 +9,7 @@ from pathlib import Path
 import re
 from urllib.parse import parse_qs, unquote, urlparse
 
+from .bounded_contracts import BoundedContractError, generate_bounded_contract, show_bounded_contract
 from .id_generation import generate_opaque_id
 from .manual_control import ManualControlError, force_stop_run, pause_run, rerun_run_step, resume_run, show_run_control_state
 from .run_persistence import RunPersistenceError
@@ -45,6 +46,7 @@ UNSUPPORTED_MEDIA_TYPE = "UNSUPPORTED_MEDIA_TYPE"
 _RUN_ACTION_PATH_RE = re.compile(
     r"^/v1/runs/(?P<run_id>[^/]+)/(?P<action>pause|resume|force-stop|rerun-step|control-state)$"
 )
+_CONTRACT_DETAIL_PATH_RE = re.compile(r"^/v1/contracts/(?P<contract_id>[^/]+)$")
 _TASK_DETAIL_PATH_RE = re.compile(r"^/v1/tasks/(?P<run_id>[^/]+)$")
 
 
@@ -204,6 +206,17 @@ class ControlPlaneApiApplication:
     def get_task(self, run_id: str) -> dict[str, object]:
         result = show_submitted_task(self.config.sqlite_db, run_id)
         return {"submitted_task": result.to_dict()}
+
+    def generate_contract(self, payload: Mapping[str, object]) -> dict[str, object]:
+        request_payload = dict(payload)
+        if "artifact_root" not in request_payload and self.config.default_artifact_root is not None:
+            request_payload["artifact_root"] = str(self.config.default_artifact_root)
+        result = generate_bounded_contract(self.config.sqlite_db, request_payload)
+        return {"bounded_contract": result.to_dict()}
+
+    def get_contract(self, contract_id: str) -> dict[str, object]:
+        result = show_bounded_contract(self.config.sqlite_db, contract_id)
+        return {"bounded_contract": result.to_dict()}
 
     def list_tasks(self, query: Mapping[str, Sequence[str]]) -> dict[str, object]:
         project_key = _query_single(query, "project_key")
@@ -384,7 +397,7 @@ class ControlPlaneApiHandler(BaseHTTPRequestHandler):
             self._send_envelope(status, request_id, data=data, error=None)
         except ApiRequestError as exc:
             self._send_envelope(exc.http_status, request_id, data=None, error=exc.to_dict())
-        except (TaskIntakeError, WorkerLoopError, ManualControlError, CleanupManagerError, StepRunPersistenceError, RunPersistenceError) as exc:
+        except (TaskIntakeError, WorkerLoopError, ManualControlError, CleanupManagerError, StepRunPersistenceError, RunPersistenceError, BoundedContractError) as exc:
             mapped = _map_domain_error(exc)
             self._send_envelope(mapped.http_status, request_id, data=None, error=mapped.to_dict())
         except Exception as exc:
@@ -423,12 +436,24 @@ class ControlPlaneApiHandler(BaseHTTPRequestHandler):
                 raise ApiRequestError(405, METHOD_NOT_ALLOWED, "method not allowed for /v1/tasks/submit")
             return 200, application.submit_task(self._read_json_body())
 
+        if path == "/v1/contracts/generate":
+            if self.command != "POST":
+                raise ApiRequestError(405, METHOD_NOT_ALLOWED, "method not allowed for /v1/contracts/generate")
+            return 200, application.generate_contract(self._read_json_body())
+
         task_match = _TASK_DETAIL_PATH_RE.match(path)
         if task_match is not None:
             if self.command != "GET":
                 raise ApiRequestError(405, METHOD_NOT_ALLOWED, "method not allowed for task detail endpoint")
             run_id = unquote(task_match.group("run_id"))
             return 200, application.get_task(run_id)
+
+        contract_match = _CONTRACT_DETAIL_PATH_RE.match(path)
+        if contract_match is not None:
+            if self.command != "GET":
+                raise ApiRequestError(405, METHOD_NOT_ALLOWED, "method not allowed for contract detail endpoint")
+            contract_id = unquote(contract_match.group("contract_id"))
+            return 200, application.get_contract(contract_id)
 
         if path == "/v1/worker/tick":
             if self.command != "POST":
@@ -559,6 +584,8 @@ def _error_stage(exc: Exception) -> str:
         return "step_run_persistence"
     if isinstance(exc, RunPersistenceError):
         return "run_persistence"
+    if isinstance(exc, BoundedContractError):
+        return "bounded_contracts"
     return "unknown"
 
 
@@ -571,9 +598,22 @@ def _http_status_for_error_code(code: str) -> int:
         "MANUAL_RUN_NOT_PAUSED",
         "MANUAL_RUN_NOT_FORCE_STOPPABLE",
         "MANUAL_STEP_NOT_RERUNNABLE",
+        "CONTRACT_BOUNDARY_VIOLATION",
+        "CONTRACT_CAPABILITY_NOT_APPROVED",
+        "CONTRACT_RUNTIME_CONTEXT_MISSING",
+        "CONTRACT_STATE_NOT_ALLOWED",
         RUN_STEP_MISMATCH,
     }:
         return 409
+    if code in {
+        "CONTRACT_GENERATION_INVALID",
+        "CONTRACT_POLICY_INVALID",
+        "CONTRACT_POLICY_MISSING",
+        "CONTRACT_TEMPLATE_INVALID",
+        "CONTRACT_TEMPLATE_NOT_FOUND",
+        "CONTRACT_TYPE_INVALID",
+    }:
+        return 400
     if "INVALID" in code or "UNSUPPORTED" in code:
         return 400
     return 500

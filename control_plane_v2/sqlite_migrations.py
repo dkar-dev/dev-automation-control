@@ -27,6 +27,7 @@ _CORE_MANAGED_TABLES = (
     "state_transitions",
     "run_snapshots",
 )
+_CONTRACT_MANIFESTS_TABLE = "contract_manifests"
 
 
 @dataclass(frozen=True)
@@ -209,6 +210,13 @@ def migrate_sqlite_v1(
             operation = "migrated_existing"
         elif before.detected_state == "legacy_untracked_v3":
             recorded_migrations.extend(_ensure_tracked_prefix(connection, resolved_db_path, migrations, up_to_version=3))
+            pending = [migration for migration in migrations if migration.version > 3]
+            executed_now, recorded_now = _apply_pending_migrations(connection, resolved_db_path, pending)
+            executed_migrations.extend(executed_now)
+            recorded_migrations.extend(recorded_now)
+            operation = "migrated_existing"
+        elif before.detected_state == "legacy_untracked_v4":
+            recorded_migrations.extend(_ensure_tracked_prefix(connection, resolved_db_path, migrations, up_to_version=4))
             operation = "adopted_existing"
         elif before.detected_state == "tracked":
             pending = [migration for migration in migrations if migration.version > before.current_version]
@@ -300,7 +308,7 @@ def _inspect_schema_version(
             user_tables,
             allow_tracked_table=True,
         )
-        if detected_layout_state not in {"legacy_untracked_v1", "legacy_untracked_v2", "legacy_untracked_v3"}:
+        if detected_layout_state not in {"legacy_untracked_v1", "legacy_untracked_v2", "legacy_untracked_v3", "legacy_untracked_v4"}:
             raise SQLiteMigrationError(
                 code=SQLITE_MIGRATION_INVALID_STATE,
                 message="Tracked SQLite database has an invalid managed schema layout",
@@ -531,6 +539,7 @@ def _detect_untracked_layout(
     queue_sql = _load_table_sql(connection, "queue_items", database_path)
     runs_has_paused = "paused" in runs_sql.lower()
     queue_has_paused = "paused" in queue_sql.lower()
+    has_contract_manifests = _CONTRACT_MANIFESTS_TABLE in tables
     if runs_has_paused != queue_has_paused:
         raise SQLiteMigrationError(
             code=SQLITE_MIGRATION_INVALID_STATE,
@@ -555,7 +564,15 @@ def _detect_untracked_layout(
                 details=f"artifact_cleanup_columns={has_cleanup_columns} runtime_cleanup_records={has_runtime_cleanup_records}",
             )
         if has_cleanup_columns and has_runtime_cleanup_records:
+            if has_contract_manifests:
+                return "legacy_untracked_v4", 4
             return "legacy_untracked_v3", 3
+        if has_contract_manifests:
+            raise SQLiteMigrationError(
+                code=SQLITE_MIGRATION_INVALID_STATE,
+                message="SQLite database has contract_manifests without the required cleanup-audit base schema",
+                database_path=database_path,
+            )
         return "legacy_untracked_v2", 2
     return "legacy_untracked_v1", 1
 

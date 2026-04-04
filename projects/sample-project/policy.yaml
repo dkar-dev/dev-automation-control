@@ -4,3 +4,234 @@ cleanup_v1:
   artifacts_ttl_seconds: 86400
   worktree_ttl_seconds: 604800
   branch_ttl_seconds: 604800
+
+bounded_contract_generation_v1:
+  storage_model: project_package_policy_v1
+  defaults:
+    implementation_step: implementation_default
+    inspection_step: inspection_default
+    recovery_step: recovery_default
+    manual_followup_step: manual_followup_default
+  templates:
+    implementation_default:
+      contract_type: implementation_step
+      target_role: executor
+      description: Default bounded executor contract for an approved implementation step.
+      allowed_workflow_ids:
+        - build
+      allowed_project_profiles:
+        - default
+      allowed_run_statuses:
+        - queued
+        - running
+      allowed_queue_statuses:
+        - queued
+        - claimed
+      allowed_origin_types:
+        - root_manual
+        - reviewer_followup
+      required_runtime_fields:
+        - task_text
+        - project_repo_path
+        - executor_worktree_path
+        - instructions_repo_path
+        - instruction_profile
+      allowed_capability_sections:
+        - implementation
+        - repo_read
+        - repo_write
+        - git
+        - tests
+      forbidden_state_tags:
+        - manual_paused
+        - pending_rerun
+        - executor_started
+        - reviewer_started
+        - run_terminal
+      contract:
+        summary: "Implementation step for {{project_key}} / {{workflow_id}}"
+        objective: "Execute the approved bounded task for {{task_text}} without changing architecture, policy, or workflow semantics."
+        deliverables:
+          - "Apply only the implementation changes required by the approved bounded task."
+          - "Keep changes inside the approved repo/worktree scope."
+          - "Produce machine-readable artifacts needed by the next bounded step."
+        allowed_actions:
+          - read_repo
+          - edit_repo_within_scope
+          - run_repo_checks
+          - write_step_artifacts
+          - prepare_handoff_commit
+        forbidden_actions:
+          - change_architecture_contract
+          - modify_policy_model
+          - change_workflow_semantics
+          - request_unapproved_capabilities
+          - autonomous_architecture_planning
+        output_requirements:
+          - "Persist a normalized bounded-contract JSON artifact."
+          - "Persist a human-readable prompt artifact."
+          - "Record implementation evidence needed by inspection or recovery."
+        boundary_notes:
+          - "Architectural replanning remains human-driven."
+          - "Do not expand scope beyond the approved workflow and project capability sections."
+
+    inspection_default:
+      contract_type: inspection_step
+      target_role: reviewer
+      description: Default bounded reviewer contract after executor handoff is ready.
+      allowed_workflow_ids:
+        - build
+      allowed_project_profiles:
+        - default
+      allowed_run_statuses:
+        - running
+      allowed_queue_statuses:
+        - claimed
+      allowed_origin_types:
+        - root_manual
+        - reviewer_followup
+      required_runtime_fields:
+        - task_text
+        - reviewer_worktree_path
+        - instructions_repo_path
+        - instruction_profile
+        - handoff_commit_sha
+      allowed_capability_sections:
+        - inspection
+        - repo_read
+        - git
+        - tests
+      required_state_tags:
+        - executor_succeeded
+      forbidden_state_tags:
+        - reviewer_started
+        - manual_paused
+        - pending_rerun
+        - run_terminal
+      contract:
+        summary: "Inspection step for {{project_key}} / {{workflow_id}}"
+        objective: "Inspect the executor handoff commit {{handoff_commit_sha}} for the approved bounded task {{task_text}} and report only within the approved review boundary."
+        deliverables:
+          - "Review the executor snapshot and bounded outputs."
+          - "Confirm whether the step stays inside the approved architecture and policy envelope."
+          - "Produce reviewer artifacts that can drive outcome ingestion."
+        allowed_actions:
+          - read_repo
+          - inspect_handoff_commit
+          - run_readonly_checks
+          - write_review_artifacts
+        forbidden_actions:
+          - change_architecture_contract
+          - modify_policy_model
+          - change_workflow_semantics
+          - request_unapproved_capabilities
+          - autonomous_architecture_planning
+        output_requirements:
+          - "Persist a normalized bounded-contract JSON artifact."
+          - "Persist a human-readable reviewer prompt artifact."
+          - "Emit structured reviewer result data compatible with ingestion."
+        boundary_notes:
+          - "Inspection may approve, block, or request bounded follow-up, but it may not redefine workflow semantics."
+          - "Reviewer changes to the architecture contract remain out of scope."
+
+    recovery_default:
+      contract_type: recovery_step
+      target_role: executor
+      description: Default bounded executor recovery contract for paused or failed runtime states.
+      allowed_workflow_ids:
+        - build
+      allowed_project_profiles:
+        - default
+      allowed_origin_types:
+        - root_manual
+        - reviewer_followup
+      required_runtime_fields:
+        - task_text
+        - project_repo_path
+        - executor_worktree_path
+        - instructions_repo_path
+        - instruction_profile
+      allowed_capability_sections:
+        - recovery
+        - repo_read
+        - repo_write
+        - git
+        - tests
+      required_any_state_tags:
+        - manual_paused
+        - pending_rerun
+        - executor_failed
+        - reviewer_failed
+      forbidden_state_tags:
+        - run_terminal
+      contract:
+        summary: "Recovery step for {{project_key}} / {{workflow_id}}"
+        objective: "Recover the bounded task {{task_text}} from the current approved runtime state ({{state_tags_csv}}) without altering architecture, policy, or workflow model."
+        deliverables:
+          - "Stabilize the active bounded task inside the existing workflow."
+          - "Address the approved failure or pause condition only within the allowed repo scope."
+          - "Produce updated artifacts for the next bounded step."
+        allowed_actions:
+          - read_repo
+          - edit_repo_within_scope
+          - run_repo_checks
+          - write_step_artifacts
+          - prepare_handoff_commit
+        forbidden_actions:
+          - change_architecture_contract
+          - modify_policy_model
+          - change_workflow_semantics
+          - request_unapproved_capabilities
+          - autonomous_architecture_planning
+        output_requirements:
+          - "Persist a normalized bounded-contract JSON artifact."
+          - "Persist a human-readable recovery prompt artifact."
+          - "Capture recovery evidence for the next bounded step or operator decision."
+        boundary_notes:
+          - "Recovery is bounded to the already approved task and workflow."
+          - "If the blocker requires architectural replanning, stop and escalate to a human."
+
+    manual_followup_default:
+      contract_type: manual_followup_step
+      target_role: manual
+      description: Default operator follow-up contract when runtime needs explicit human action.
+      allowed_workflow_ids:
+        - build
+      allowed_project_profiles:
+        - default
+      allowed_origin_types:
+        - root_manual
+        - reviewer_followup
+      required_runtime_fields:
+        - task_text
+      allowed_capability_sections:
+        - manual_followup
+        - repo_read
+      required_any_state_tags:
+        - run_terminal
+        - manual_paused
+        - reviewer_failed
+      contract:
+        summary: "Manual follow-up for {{project_key}} / {{workflow_id}}"
+        objective: "Prepare the next human decision for bounded task {{task_text}} from the current runtime state ({{state_tags_csv}}) without changing the architectural contract."
+        deliverables:
+          - "Summarize the bounded state and blocker for an operator."
+          - "Identify the next approved manual action or escalation path."
+          - "Preserve append-only artifacts for auditability."
+        allowed_actions:
+          - inspect_artifacts
+          - summarize_runtime_state
+          - request_operator_decision
+        forbidden_actions:
+          - change_architecture_contract
+          - modify_policy_model
+          - change_workflow_semantics
+          - request_unapproved_capabilities
+          - autonomous_architecture_planning
+        output_requirements:
+          - "Persist a normalized bounded-contract JSON artifact."
+          - "Persist a human-readable operator prompt artifact."
+          - "Reference the relevant run, flow, and artifact history."
+        boundary_notes:
+          - "This contract is for operator follow-up only."
+          - "Any architectural replanning or policy change remains a human responsibility outside the engine."

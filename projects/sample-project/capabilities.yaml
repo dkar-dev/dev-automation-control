@@ -1,3 +1,18 @@
-# capabilities.yaml is mandatory even when sections are empty.
-# TODO(OPEN_ISSUE): define canonical section names.
-sections: {}
+# capabilities.yaml is mandatory even when sections are minimally defined.
+sections:
+  implementation:
+    description: Approved bounded executor implementation work.
+  inspection:
+    description: Approved bounded reviewer inspection work.
+  recovery:
+    description: Approved bounded executor recovery work.
+  manual_followup:
+    description: Approved bounded operator follow-up work.
+  repo_read:
+    description: Read-only repository access.
+  repo_write:
+    description: Scoped repository modifications inside approved worktrees.
+  git:
+    description: Approved git operations inside the bounded runtime flow.
+  tests:
+    description: Approved test and verification execution inside the bounded runtime flow.
