@@ -2,8 +2,11 @@
 
 ## Scope
 - This is the thin v1 transport boundary for the existing Control Plane v2 primitives.
+- This is the preferred local orchestration/control boundary for v1 operators, `n8n`, and local automations.
 - It is intended for localhost-only use from `n8n`, local automations, and other single-machine triggers.
 - It does not replace the existing CLI utilities; it routes requests into the same intake, bounded-contract generation, worker, manual-control, and cleanup modules.
+- The legacy bridge on `127.0.0.1:8787` is deprecated as an orchestration transport.
+- Legacy executor/reviewer runner scripts remain backend implementations behind the dispatch adapter and worker loop.
 
 ## Chosen server stack
 - Python stdlib `http.server.ThreadingHTTPServer`
@@ -53,6 +56,13 @@ CLI/env config sources:
 - `--artifact-root` or `CONTROL_PLANE_API_ARTIFACT_ROOT`
 - `--workspace-root` or `CONTROL_PLANE_API_WORKSPACE_ROOT`
 - `--worker-log-root` or `CONTROL_PLANE_API_WORKER_LOG_ROOT`
+
+## Deprecation and compatibility
+- Use this API on `127.0.0.1:8788` as the primary local control-plane/orchestration surface.
+- Do not point new `n8n` workflows or operator docs at the legacy bridge on `127.0.0.1:8787`.
+- The legacy bridge remains only for compatibility/debugging, while backend execution still flows through the existing legacy runner scripts inside the dispatch adapter.
+- For cutover mapping, see [`docs/control-plane-v2/orchestration-cutover.md`](/home/dkar/workspace/control/docs/control-plane-v2/orchestration-cutover.md).
+- For the formal deprecation note, see [`docs/deprecations/legacy-bridge-orchestration.md`](/home/dkar/workspace/control/docs/deprecations/legacy-bridge-orchestration.md).
 
 ## Response envelope
 
@@ -300,6 +310,7 @@ This smoke verifies:
 - websocket or streaming transport
 - distributed coordination
 - remote worker execution protocol
-- replacing the legacy bridge on `8787`
+- removing the legacy backend runner layer
+- maintaining `8787` as a second preferred orchestration transport
 - direct SQLite access from `n8n`
 - calling host-side legacy scripts from inside `n8n`

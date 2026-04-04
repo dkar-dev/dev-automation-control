@@ -175,6 +175,8 @@ Current role resolution is intentionally narrow:
 - prompt building and instruction resolution scripts
 - commit handoff logic
 - existing host-side Codex launch contract
+- These scripts remain backend execution implementations only; they are not the preferred orchestration transport boundary.
+- The preferred local orchestration path is the Control Plane HTTP API on `127.0.0.1:8788`.
 
 The adapter does not reimplement the Codex launch sequence. It prepares sandbox state/task files, invokes the legacy backend, and captures the resulting artifacts and step lifecycle.
 

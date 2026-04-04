@@ -6,6 +6,7 @@ Purpose:
 - let `n8n` act as an orchestration client over the localhost HTTP API
 - keep task intake, worker execution, manual control, and cleanup inside the control plane
 - avoid the legacy bridge on `127.0.0.1:8787`
+- treat the legacy bridge workflow export as compatibility-only, not as the forward path
 
 ## Package contents
 
@@ -37,6 +38,11 @@ Supporting docs:
 - Supports `show_control_state`, `pause`, `resume`, and `force_stop`.
 - Calls distinct HTTP paths for each action.
 
+Contract generation remains available through the same API surface:
+- `POST /v1/contracts/generate`
+- `GET /v1/contracts/{contract_id}`
+- The current `n8n` package does not ship a dedicated contract-generation workflow; call the HTTP API directly if you need that step in `n8n`.
+
 ## Import into n8n
 
 1. Start the Control Plane API.
@@ -59,12 +65,18 @@ These templates intentionally keep `n8n` thin:
 
 The existing legacy workflow export at [`n8n/workflows/control-bridge-run-v1.json`](/home/dkar/workspace/control/n8n/workflows/control-bridge-run-v1.json) is left in place for compatibility notes only.
 
+Do not import that legacy export for new orchestration flows. Use the workflows under [`automation/n8n/workflows/`](/home/dkar/workspace/control/automation/n8n/workflows) and point them at `8788`.
+
+For old bridge -> new API mapping, see:
+- [`docs/control-plane-v2/orchestration-cutover.md`](/home/dkar/workspace/control/docs/control-plane-v2/orchestration-cutover.md)
+- [`docs/deprecations/legacy-bridge-orchestration.md`](/home/dkar/workspace/control/docs/deprecations/legacy-bridge-orchestration.md)
+
 This v1 package is the forward path for Control Plane v2 over the localhost HTTP API.
 
 ## Out of scope
 
 - production-grade authentication
 - direct database access from `n8n`
-- legacy bridge replacement work on port `8787`
+- reintroducing `8787` as an `n8n` transport
 - orchestration logic duplicated inside `Code` nodes
 - synchronization of Control Plane state into native n8n state machines

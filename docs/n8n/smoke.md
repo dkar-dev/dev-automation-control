@@ -98,3 +98,4 @@ For this smoke, and for the n8n package itself:
 - do not access SQLite directly
 - do not call the legacy bridge
 - do not reimplement worker or run-state logic in `Code` nodes
+- treat the legacy bridge workflow export as compatibility-only

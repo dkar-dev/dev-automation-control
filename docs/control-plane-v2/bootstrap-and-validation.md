@@ -746,7 +746,10 @@ HTTP API behavior in this step:
 - it uses Python stdlib `http.server.ThreadingHTTPServer`
 - it is JSON-only and returns a stable envelope with `ok`, `data`, `error`, and `request_id`
 - it is localhost-only in v1 and intentionally does not implement auth or tenancy
-- default bind is `127.0.0.1:8788`, so it stays separate from the legacy bridge on `127.0.0.1:8787`
+- default bind is `127.0.0.1:8788`
+- this is now the preferred local orchestration/control path for operators and `n8n`
+- the legacy bridge on `127.0.0.1:8787` remains separate and deprecated as an orchestration transport
+- legacy executor/reviewer runner scripts still remain the backend execution implementation inside the dispatch adapter
 
 Current endpoint surface:
 - `POST /v1/tasks/submit`
@@ -764,6 +767,8 @@ Current endpoint surface:
 
 For the full request/response contract and `n8n` payload examples, see:
 - [`docs/control-plane-v2/local-http-api.md`](/home/dkar/workspace/control/docs/control-plane-v2/local-http-api.md)
+- [`docs/control-plane-v2/orchestration-cutover.md`](/home/dkar/workspace/control/docs/control-plane-v2/orchestration-cutover.md)
+- [`docs/deprecations/legacy-bridge-orchestration.md`](/home/dkar/workspace/control/docs/deprecations/legacy-bridge-orchestration.md)
 
 ## Smoke checks
 
@@ -916,6 +921,7 @@ The HTTP API smoke verifies:
 - local server startup plus `GET /v1/health`
 - malformed JSON failure
 - task submit/list/show through HTTP
+- bounded contract generate/show through HTTP
 - worker tick and run-until-idle through HTTP
 - pause/resume/force-stop through HTTP
 - cleanup dry-run through HTTP

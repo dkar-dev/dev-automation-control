@@ -30,6 +30,10 @@ cat <<'EOF'
     "n8n talks only to the localhost HTTP API",
     "n8n does not open SQLite directly",
     "n8n does not call the legacy 8787 bridge"
+  ],
+  "adjacent_api_surface": [
+    "bounded contract generation stays on POST /v1/contracts/generate",
+    "legacy bridge transport is compatibility-only"
   ]
 }
 EOF

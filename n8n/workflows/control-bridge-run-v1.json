@@ -1,7 +1,7 @@
 [
   {
     "id": "controlBridgeRunV1",
-    "name": "Control Bridge Run v1",
+    "name": "DEPRECATED - Control Bridge Run v1",
     "active": false,
     "isArchived": false,
     "settings": {},

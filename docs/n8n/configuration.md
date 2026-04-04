@@ -28,6 +28,8 @@ The provided workflow templates already default `base_url` and `operator` from t
 
 ## Base URL selection
 
+Only the Control Plane HTTP API on `8788` is supported for this package.
+
 If `n8n` runs in Docker:
 - use `http://host.docker.internal:8788`
 
@@ -35,6 +37,8 @@ If `n8n` runs directly on the same host:
 - use `http://127.0.0.1:8788`
 
 If you override the API port, update the base URL in the workflow `Edit Fields` node or via `N8N_CONTROL_PLANE_BASE_URL`.
+
+Do not point the v1 package at the deprecated legacy bridge on `127.0.0.1:8787`.
 
 ## Docker vs host execution
 
@@ -62,6 +66,7 @@ Do not add:
 - database credentials
 - SSH credentials for host scripts
 - bridge credentials for `8787`
+- legacy bridge URLs as the workflow base URL
 
 ## Workflow-specific defaults
 

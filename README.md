@@ -1,9 +1,11 @@
 # Dev Automation Control Repo
 
-This repo is the control plane for orchestration between ChatGPT Web, n8n, Playwright bridge, and Codex executor/reviewer runs.
+This repo is the control plane for local orchestration between `n8n`, operator tooling, backend runner scripts, and Codex executor/reviewer runs.
 
 ## Legacy pipeline vs Control Plane v2 scaffold
-- The current executable pipeline in this repository is still the legacy single-task flow (`n8n`, `state/current.json`, bridge scripts, and outbox lifecycle below).
+- The preferred local orchestration/control boundary is now the Control Plane HTTP API v1 on `127.0.0.1:8788`.
+- The legacy control bridge on `127.0.0.1:8787` is deprecated as an orchestration transport and remains only for compatibility/debugging.
+- Legacy executor/reviewer runner scripts remain in use as backend execution implementations inside the v2 dispatch adapter and worker loop.
 - A separate Control Plane v2 scaffold now exists under:
   - `docs/control-plane-v2/`
   - `projects/`
@@ -16,7 +18,7 @@ This repo is the control plane for orchestration between ChatGPT Web, n8n, Playw
 - The v2 scaffold now also includes a thin localhost-only HTTP API v1, so `n8n` and other local automations can call intake, worker, manual-control, and cleanup primitives over stable JSON endpoints.
 - The v2 scaffold now also includes an importable n8n workflow package v1 over that HTTP API, so n8n can stay a thin orchestration client instead of embedding control-plane logic.
 - The v2 scaffold now also includes a bounded-contract generation engine v1, so approved policy/templates can be rendered into normalized machine-readable contracts and Codex-ready prompts without changing architecture or workflow semantics.
-- Migration from legacy pipeline to v2 is not completed yet.
+- Cutover from the legacy bridge transport to the v2 HTTP API is controlled and partial; the backend runner layer remains intentionally legacy.
 - The first executable v2 utilities now live in:
   - `scripts/validate-project-package`
   - `scripts/init-sqlite-v1`
@@ -76,6 +78,8 @@ This repo is the control plane for orchestration between ChatGPT Web, n8n, Playw
   - [`docs/control-plane-v2/manual-dispatch.md`](/home/dkar/workspace/control/docs/control-plane-v2/manual-dispatch.md)
   - [`docs/control-plane-v2/local-http-api.md`](/home/dkar/workspace/control/docs/control-plane-v2/local-http-api.md)
   - [`docs/control-plane-v2/bounded-contract-generation.md`](/home/dkar/workspace/control/docs/control-plane-v2/bounded-contract-generation.md)
+  - [`docs/control-plane-v2/orchestration-cutover.md`](/home/dkar/workspace/control/docs/control-plane-v2/orchestration-cutover.md)
+  - [`docs/deprecations/legacy-bridge-orchestration.md`](/home/dkar/workspace/control/docs/deprecations/legacy-bridge-orchestration.md)
   - [`docs/n8n/README.md`](/home/dkar/workspace/control/docs/n8n/README.md)
 
 ## n8n HTTP API binding v1
@@ -94,6 +98,15 @@ This repo is the control plane for orchestration between ChatGPT Web, n8n, Playw
   - `n8n` does not call the legacy bridge on `127.0.0.1:8787`
   - `Code` nodes in the package only build JSON payloads and flatten API responses
 
+## Preferred local orchestration path
+- Submit bounded work with `POST /v1/tasks/submit` or `./scripts/submit-bounded-task`
+- Generate bounded contracts with `POST /v1/contracts/generate` or `./scripts/generate-bounded-contract`
+- Progress execution with `POST /v1/worker/tick`, `POST /v1/worker/run-until-idle`, `./scripts/run-worker-tick`, or `./scripts/run-worker-until-idle`
+- Use manual control through `GET /v1/runs/{run_id}/control-state` plus `POST /v1/runs/{run_id}/{pause|resume|force-stop|rerun-step}`
+- Run retention cleanup with `POST /v1/cleanup/run-once`, `./scripts/list-cleanup-candidates`, `./scripts/run-cleanup-once`, or `./scripts/show-cleanup-status`
+- Cutover mapping: [`docs/control-plane-v2/orchestration-cutover.md`](/home/dkar/workspace/control/docs/control-plane-v2/orchestration-cutover.md)
+- Formal deprecation note: [`docs/deprecations/legacy-bridge-orchestration.md`](/home/dkar/workspace/control/docs/deprecations/legacy-bridge-orchestration.md)
+
 ## Single-task v1 contract
 - One active task at a time
 - Inbox: `inbox/current-task.md`
@@ -101,10 +114,11 @@ This repo is the control plane for orchestration between ChatGPT Web, n8n, Playw
 - Executor report: `outbox/executor-report.md`
 - Reviewer report: `outbox/reviewer-report.md`
 
-## Bridge contract for real runs
-- Real executor/reviewer runs are started by the host-side HTTP bridge, not by `Execute Command` inside the n8n Docker container.
-- n8n should call `http://host.docker.internal:8787` with `HTTP Request` nodes.
-- The bridge runs `control/scripts/run-executor.sh` and `control/scripts/run-reviewer.sh` on the host/WSL side, where Codex, worktrees, runtime, and project paths actually exist.
+## Legacy backend runner layer
+- Real executor/reviewer process launches still happen through host-side scripts, not through `Execute Command` inside the n8n Docker container.
+- Preferred orchestration clients should call `scripts/run-control-plane-api` on `127.0.0.1:8788` or `host.docker.internal:8788`.
+- The legacy bridge transport on `127.0.0.1:8787` is deprecated as an orchestration boundary for operators, `n8n`, and local automations.
+- The backend runner layer still uses `control/scripts/run-executor.sh` and `control/scripts/run-reviewer.sh` on the host/WSL side, where Codex, worktrees, runtime, and project paths actually exist.
 - The v2 manual dispatch adapter reuses those same host-side scripts, but runs them inside an isolated per-dispatch sandbox and disables reviewer semantic auto-completion for the v2 reviewer path.
 - After a v2 reviewer dispatch finishes, `scripts/ingest-reviewer-result` can extract the semantic verdict from stored reviewer artifacts and close the v2 outcome chain.
 - `scripts/run-worker-tick` and `scripts/run-worker-until-idle` now chain claim -> dispatch -> ingestion on a single host process, but they do not add daemonization or multi-worker fencing.
@@ -160,7 +174,8 @@ overlays/<name>/reviewer.md
 - `resolved_instruction_files` in state/current-run is the de-duplicated union of files resolved so far for the current run.
 - `runtime/runs/<run_id>/resolved-executor-instructions.json` and `runtime/runs/<run_id>/resolved-reviewer-instructions.json` keep the role-specific manifests used to build each prompt.
 
-## Relevant bridge endpoints
+## Deprecated legacy bridge endpoints
+- These endpoints remain only for compatibility/debugging and are not the preferred orchestration surface.
 - `GET /healthz`
 - `GET /current-run`
 - `POST /prepare-run`
@@ -207,8 +222,9 @@ overlays/<name>/reviewer.md
 - If no unambiguous verdict can be extracted, ingestion fails closed with an explicit error and does not mutate the flow.
 - `--verdict` is available only as a manual recovery/debug override. It forces the semantic verdict, but still preserves summary and `commit_sha` from the highest-priority readable artifacts when available.
 
-## Bridge lifecycle
-- Normal control-side lifecycle is now:
+## Deprecated legacy bridge lifecycle
+- This lifecycle is retained only for compatibility notes and legacy smoke coverage.
+- Legacy bridge lifecycle remains:
   - `POST /prepare-run`
   - `POST /run-executor`
   - `POST /run-reviewer`
@@ -218,7 +234,9 @@ overlays/<name>/reviewer.md
 - The legacy workflow export at [`n8n/workflows/control-bridge-run-v1.json`](/home/dkar/workspace/control/n8n/workflows/control-bridge-run-v1.json) remains for compatibility notes only.
 - The forward path for Control Plane v2 in n8n is the HTTP API package under [`automation/n8n/workflows/`](/home/dkar/workspace/control/automation/n8n/workflows).
 
-## Local startup path
+## Deprecated legacy bridge startup path
+Use this only for compatibility/debugging. For new orchestration, use the HTTP API startup path below.
+
 1. Start the host-side bridge:
    ```bash
    cd /home/dkar/workspace/control
@@ -270,10 +288,13 @@ overlays/<name>/reviewer.md
 4. Set the workflow `base_url`:
    - `http://host.docker.internal:8788` if n8n runs in Docker
    - `http://127.0.0.1:8788` if n8n runs on the host
-5. Execute the imported workflow and inspect the flattened output from the final `Code` node.
+5. Use the same API for operator-side bounded contract generation when needed:
+   - `POST /v1/contracts/generate`
+   - `GET /v1/contracts/{contract_id}`
+6. Execute the imported workflow and inspect the flattened output from the final `Code` node.
 
-## Smoke test
-- Run the isolated e2e smoke script:
+## Legacy bridge smoke test
+- Run the isolated e2e smoke script only when you need compatibility coverage for the deprecated legacy bridge:
   ```bash
   cd /home/dkar/workspace/control
   ./scripts/smoke-bridge-e2e.sh
@@ -369,7 +390,9 @@ overlays/<name>/reviewer.md
   ```
 - The dedicated smoke test uses the deterministic fixture repo under [`fixtures/instructions-repo`](/home/dkar/workspace/control/fixtures/instructions-repo/profiles/default/shared.md), initializes it as a temporary git repo, prepares a run with selectors only, resolves instructions for both roles, builds both prompt files, and verifies the exported instruction metadata.
 
-## Manual smoke test
+## Deprecated legacy bridge manual smoke
+Use this only for compatibility debugging of the deprecated bridge transport.
+
 1. Start the bridge:
    ```bash
    cd /home/dkar/workspace/control

@@ -308,6 +308,36 @@ runtime_context = task_detail["data"]["submitted_task"]["runtime_context_manifes
 assert runtime_context["thread_label"] == "api-http-submit", task_detail
 assert runtime_context["instruction_overlays"] == ["strict-review"], task_detail
 
+contract_response = request_json(
+    "POST",
+    "/v1/contracts/generate",
+    payload={
+        "run_id": run_id,
+        "contract_type": "implementation_step",
+        "runtime_context": {
+            "task_text": submit_payload["task_text"],
+            "project_repo_path": str(tmp_root / "projects" / "demo"),
+            "executor_worktree_path": str(tmp_root / "runtime" / "worktrees" / "demo-executor"),
+            "reviewer_worktree_path": str(tmp_root / "runtime" / "worktrees" / "demo-reviewer"),
+            "instructions_repo_path": str(tmp_root / "instructions"),
+            "instruction_profile": "default",
+            "instruction_overlays": ["strict-review"],
+            "source": "http-submit",
+            "thread_label": "api-http-submit",
+        },
+    },
+)
+assert contract_response["ok"] is True, contract_response
+bounded_contract = contract_response["data"]["bounded_contract"]
+contract_id = bounded_contract["contract_id"]
+assert bounded_contract["contract_type"] == "implementation_step", contract_response
+assert bounded_contract["template_key"] == "implementation_default", contract_response
+assert bounded_contract["prompt_text"], contract_response
+
+contract_detail = request_json("GET", f"/v1/contracts/{urllib.parse.quote(contract_id)}")
+assert contract_detail["data"]["bounded_contract"]["contract_id"] == contract_id, contract_detail
+assert contract_detail["data"]["bounded_contract"]["contract_type"] == "implementation_step", contract_detail
+
 worker_tick = request_json("POST", "/v1/worker/tick", payload={})
 tick_data = worker_tick["data"]["worker_tick"]
 assert tick_data["status"] == "progressed", worker_tick
@@ -395,6 +425,7 @@ print(
         {
             "base_url": base_url,
             "approved_run_id": run_id,
+            "implementation_contract_id": contract_id,
             "paused_run_id": paused_run_id,
             "force_stopped_run_id": stopped_run_id,
             "cleanup_artifact_candidates": cleanup_pass["summary"]["artifacts"]["processed"],

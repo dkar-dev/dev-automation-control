@@ -228,3 +228,5 @@ They do not:
 - target SQLite directly
 - call legacy bridge endpoints on `8787`
 - invoke host scripts from inside n8n
+
+For legacy bridge command mapping, see [`docs/control-plane-v2/orchestration-cutover.md`](/home/dkar/workspace/control/docs/control-plane-v2/orchestration-cutover.md).

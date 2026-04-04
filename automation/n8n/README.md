@@ -12,5 +12,6 @@ Boundary:
 - `n8n` does not read or mutate SQLite directly.
 - `n8n` does not call legacy bridge endpoints on `127.0.0.1:8787`.
 - `Code` nodes only normalize inputs and outputs. Orchestration logic stays in the control plane.
+- The legacy bridge workflow export is compatibility-only and is not the forward path for new orchestration.
 
 Import guidance and payload examples live under [`docs/n8n/`](/home/dkar/workspace/control/docs/n8n/README.md).
