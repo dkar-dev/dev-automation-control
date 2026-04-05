@@ -15,6 +15,14 @@ INSTRUCTIONS_FILE = "instructions.yaml"
 CAPABILITIES_FILE = "capabilities.yaml"
 BOUNDED_CONTRACT_POLICY_BLOCK = "bounded_contract_generation_v1"
 BOUNDED_CONTRACT_STORAGE_MODEL = "project_package_policy_v1"
+HOST_CHECKS_RUNTIME_BLOCK = "host_checks_v1"
+HOST_CHECK_KINDS = (
+    "command_check",
+    "http_check",
+    "file_check",
+    "process_check",
+)
+HOST_CHECK_SEVERITIES = ("required", "advisory")
 BOUNDED_CONTRACT_TAXONOMY = (
     "implementation_step",
     "inspection_step",
@@ -220,6 +228,10 @@ def _validate_required_keys(
     if policy_doc is not None:
         _validate_bounded_contract_policy_block(package_root, policy_doc, errors)
 
+    runtime_doc = files.get(RUNTIME_FILE)
+    if runtime_doc is not None:
+        _validate_host_checks_runtime_block(package_root, runtime_doc, errors)
+
 
 def _validate_bounded_contract_policy_block(
     package_root: Path,
@@ -419,6 +431,161 @@ def _validate_template_mapping(
             _validate_optional_string_list(package_root, policy_path, f"{key_path}.contract.{list_key}", contract.get(list_key), errors, required=True)
 
 
+def _validate_host_checks_runtime_block(
+    package_root: Path,
+    runtime_doc: ValidatedYamlDocument,
+    errors: list[ValidationError],
+) -> None:
+    raw_block = runtime_doc.data.get(HOST_CHECKS_RUNTIME_BLOCK)
+    if raw_block is None:
+        return
+    if not isinstance(raw_block, dict):
+        errors.append(
+            ValidationError(
+                code=WRONG_KEY_TYPE,
+                message=f"runtime.yaml.{HOST_CHECKS_RUNTIME_BLOCK} must be a mapping",
+                package_root=package_root,
+                file_path=runtime_doc.path,
+                key_path=HOST_CHECKS_RUNTIME_BLOCK,
+                details=f"actual_type={_yaml_type_name(raw_block)}",
+            )
+        )
+        return
+
+    checks = raw_block.get("checks")
+    if checks is None:
+        errors.append(
+            ValidationError(
+                code=MISSING_REQUIRED_KEY,
+                message=f"Missing required key: {HOST_CHECKS_RUNTIME_BLOCK}.checks",
+                package_root=package_root,
+                file_path=runtime_doc.path,
+                key_path=f"{HOST_CHECKS_RUNTIME_BLOCK}.checks",
+            )
+        )
+        return
+    if not isinstance(checks, list):
+        errors.append(
+            ValidationError(
+                code=WRONG_KEY_TYPE,
+                message=f"runtime.yaml.{HOST_CHECKS_RUNTIME_BLOCK}.checks must be a list",
+                package_root=package_root,
+                file_path=runtime_doc.path,
+                key_path=f"{HOST_CHECKS_RUNTIME_BLOCK}.checks",
+                details=f"actual_type={_yaml_type_name(checks)}",
+            )
+        )
+        return
+
+    seen_ids: set[str] = set()
+    for index, raw_check in enumerate(checks):
+        key_path = f"{HOST_CHECKS_RUNTIME_BLOCK}.checks[{index}]"
+        if not isinstance(raw_check, dict):
+            errors.append(
+                ValidationError(
+                    code=WRONG_KEY_TYPE,
+                    message=f"runtime.yaml.{key_path} must be a mapping",
+                    package_root=package_root,
+                    file_path=runtime_doc.path,
+                    key_path=key_path,
+                    details=f"actual_type={_yaml_type_name(raw_check)}",
+                )
+            )
+            continue
+        _require_string_key(package_root, runtime_doc.path, key_path, raw_check, "id", errors)
+        _require_string_key(package_root, runtime_doc.path, key_path, raw_check, "kind", errors)
+        _require_boolean_key(package_root, runtime_doc.path, key_path, raw_check, "enabled", errors)
+        _require_string_key(package_root, runtime_doc.path, key_path, raw_check, "severity", errors)
+        _require_positive_integer_key(package_root, runtime_doc.path, key_path, raw_check, "timeout_seconds", errors)
+        _require_mapping_key(package_root, runtime_doc.path, key_path, raw_check, "success", errors)
+        _validate_optional_string_list(package_root, runtime_doc.path, f"{key_path}.allowed_workflow_ids", raw_check.get("allowed_workflow_ids"), errors)
+        _validate_optional_string_list(package_root, runtime_doc.path, f"{key_path}.allowed_project_profiles", raw_check.get("allowed_project_profiles"), errors)
+
+        check_id = raw_check.get("id")
+        if isinstance(check_id, str):
+            if check_id in seen_ids:
+                errors.append(
+                    ValidationError(
+                        code=WRONG_KEY_TYPE,
+                        message=f"Duplicate host check id: {check_id}",
+                        package_root=package_root,
+                        file_path=runtime_doc.path,
+                        key_path=f"{key_path}.id",
+                    )
+                )
+            seen_ids.add(check_id)
+
+        kind = raw_check.get("kind")
+        if isinstance(kind, str) and kind not in HOST_CHECK_KINDS:
+            errors.append(
+                ValidationError(
+                    code=WRONG_KEY_TYPE,
+                    message=f"{key_path}.kind must be one of: {', '.join(HOST_CHECK_KINDS)}",
+                    package_root=package_root,
+                    file_path=runtime_doc.path,
+                    key_path=f"{key_path}.kind",
+                    details=f"actual={kind}",
+                )
+            )
+
+        severity = raw_check.get("severity")
+        if isinstance(severity, str) and severity not in HOST_CHECK_SEVERITIES:
+            errors.append(
+                ValidationError(
+                    code=WRONG_KEY_TYPE,
+                    message=f"{key_path}.severity must be one of: {', '.join(HOST_CHECK_SEVERITIES)}",
+                    package_root=package_root,
+                    file_path=runtime_doc.path,
+                    key_path=f"{key_path}.severity",
+                    details=f"actual={severity}",
+                )
+            )
+
+        success = raw_check.get("success")
+        if not isinstance(success, dict):
+            continue
+        if kind == "command_check":
+            command = raw_check.get("command")
+            if not (isinstance(command, str) and command.strip()) and not _is_string_list(command):
+                errors.append(
+                    ValidationError(
+                        code=WRONG_KEY_TYPE,
+                        message=f"{key_path}.command must be a string or list of strings",
+                        package_root=package_root,
+                        file_path=runtime_doc.path,
+                        key_path=f"{key_path}.command",
+                        details=f"actual_type={_yaml_type_name(command)}",
+                    )
+                )
+            _validate_optional_integer(package_root, runtime_doc.path, f"{key_path}.success.exit_code", success.get("exit_code"), errors)
+            _validate_optional_string(package_root, runtime_doc.path, f"{key_path}.success.stdout_contains", success.get("stdout_contains"), errors)
+            _validate_optional_string(package_root, runtime_doc.path, f"{key_path}.success.stderr_contains", success.get("stderr_contains"), errors)
+        elif kind == "http_check":
+            _require_string_key(package_root, runtime_doc.path, key_path, raw_check, "url", errors)
+            _validate_optional_integer(package_root, runtime_doc.path, f"{key_path}.success.status_code", success.get("status_code"), errors)
+            _validate_optional_string(package_root, runtime_doc.path, f"{key_path}.success.body_contains", success.get("body_contains"), errors)
+        elif kind == "file_check":
+            _require_string_key(package_root, runtime_doc.path, key_path, raw_check, "path", errors)
+            _validate_optional_boolean(package_root, runtime_doc.path, f"{key_path}.success.exists", success.get("exists"), errors)
+            _validate_optional_string(package_root, runtime_doc.path, f"{key_path}.success.contains_text", success.get("contains_text"), errors)
+            file_type = success.get("file_type")
+            if file_type is not None and file_type not in {"file", "directory", "any"}:
+                errors.append(
+                    ValidationError(
+                        code=WRONG_KEY_TYPE,
+                        message=f"{key_path}.success.file_type must be one of: file, directory, any",
+                        package_root=package_root,
+                        file_path=runtime_doc.path,
+                        key_path=f"{key_path}.success.file_type",
+                        details=f"actual={file_type}",
+                    )
+                )
+        elif kind == "process_check":
+            _require_string_key(package_root, runtime_doc.path, key_path, raw_check, "process_selector", errors)
+            _validate_optional_non_negative_integer(package_root, runtime_doc.path, f"{key_path}.success.min_matches", success.get("min_matches"), errors)
+            _validate_optional_non_negative_integer(package_root, runtime_doc.path, f"{key_path}.success.max_matches", success.get("max_matches"), errors)
+
+
 def _require_string_key(
     package_root: Path,
     file_path: Path,
@@ -515,6 +682,163 @@ def _validate_optional_string_list(
                 details=f"actual_type={_yaml_type_name(value)}",
             )
         )
+
+
+def _require_boolean_key(
+    package_root: Path,
+    file_path: Path,
+    key_prefix: str,
+    mapping: dict[str, Any],
+    key: str,
+    errors: list[ValidationError],
+) -> None:
+    if key not in mapping:
+        errors.append(
+            ValidationError(
+                code=MISSING_REQUIRED_KEY,
+                message=f"Missing required key: {key_prefix}.{key}",
+                package_root=package_root,
+                file_path=file_path,
+                key_path=f"{key_prefix}.{key}",
+            )
+        )
+        return
+    if not isinstance(mapping[key], bool):
+        errors.append(
+            ValidationError(
+                code=WRONG_KEY_TYPE,
+                message=f"{key_prefix}.{key} must be a boolean",
+                package_root=package_root,
+                file_path=file_path,
+                key_path=f"{key_prefix}.{key}",
+                details=f"actual_type={_yaml_type_name(mapping[key])}",
+            )
+        )
+
+
+def _require_positive_integer_key(
+    package_root: Path,
+    file_path: Path,
+    key_prefix: str,
+    mapping: dict[str, Any],
+    key: str,
+    errors: list[ValidationError],
+) -> None:
+    if key not in mapping:
+        errors.append(
+            ValidationError(
+                code=MISSING_REQUIRED_KEY,
+                message=f"Missing required key: {key_prefix}.{key}",
+                package_root=package_root,
+                file_path=file_path,
+                key_path=f"{key_prefix}.{key}",
+            )
+        )
+        return
+    value = mapping[key]
+    if not isinstance(value, int) or isinstance(value, bool) or value <= 0:
+        errors.append(
+            ValidationError(
+                code=WRONG_KEY_TYPE,
+                message=f"{key_prefix}.{key} must be a positive integer",
+                package_root=package_root,
+                file_path=file_path,
+                key_path=f"{key_prefix}.{key}",
+                details=f"actual_type={_yaml_type_name(value)}",
+            )
+        )
+
+
+def _validate_optional_string(
+    package_root: Path,
+    file_path: Path,
+    key_path: str,
+    value: Any,
+    errors: list[ValidationError],
+) -> None:
+    if value is None:
+        return
+    if not isinstance(value, str):
+        errors.append(
+            ValidationError(
+                code=WRONG_KEY_TYPE,
+                message=f"{key_path} must be a string",
+                package_root=package_root,
+                file_path=file_path,
+                key_path=key_path,
+                details=f"actual_type={_yaml_type_name(value)}",
+            )
+        )
+
+
+def _validate_optional_boolean(
+    package_root: Path,
+    file_path: Path,
+    key_path: str,
+    value: Any,
+    errors: list[ValidationError],
+) -> None:
+    if value is None:
+        return
+    if not isinstance(value, bool):
+        errors.append(
+            ValidationError(
+                code=WRONG_KEY_TYPE,
+                message=f"{key_path} must be a boolean",
+                package_root=package_root,
+                file_path=file_path,
+                key_path=key_path,
+                details=f"actual_type={_yaml_type_name(value)}",
+            )
+        )
+
+
+def _validate_optional_integer(
+    package_root: Path,
+    file_path: Path,
+    key_path: str,
+    value: Any,
+    errors: list[ValidationError],
+) -> None:
+    if value is None:
+        return
+    if not isinstance(value, int) or isinstance(value, bool):
+        errors.append(
+            ValidationError(
+                code=WRONG_KEY_TYPE,
+                message=f"{key_path} must be an integer",
+                package_root=package_root,
+                file_path=file_path,
+                key_path=key_path,
+                details=f"actual_type={_yaml_type_name(value)}",
+            )
+        )
+
+
+def _validate_optional_non_negative_integer(
+    package_root: Path,
+    file_path: Path,
+    key_path: str,
+    value: Any,
+    errors: list[ValidationError],
+) -> None:
+    if value is None:
+        return
+    if not isinstance(value, int) or isinstance(value, bool) or value < 0:
+        errors.append(
+            ValidationError(
+                code=WRONG_KEY_TYPE,
+                message=f"{key_path} must be an integer >= 0",
+                package_root=package_root,
+                file_path=file_path,
+                key_path=key_path,
+                details=f"actual_type={_yaml_type_name(value)}",
+            )
+        )
+
+
+def _is_string_list(value: Any) -> bool:
+    return isinstance(value, list) and all(isinstance(item, str) for item in value)
 
 
 def _yaml_type_name(value: Any) -> str:

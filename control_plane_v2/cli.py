@@ -105,6 +105,13 @@ from .task_intake import (
     show_submitted_task,
     submit_bounded_task,
 )
+from .host_checks import (
+    HostCheckError,
+    HOST_CHECKS_REQUEST_INVALID,
+    list_host_checks,
+    run_host_checks,
+    show_host_check_results,
+)
 
 
 CONTROL_DIR = Path(__file__).resolve().parents[1]
@@ -1595,6 +1602,150 @@ def main_list_submitted_tasks(argv: list[str] | None = None) -> int:
     return 0
 
 
+def main_run_host_checks(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(description="Run the host-side smoke/deploy checks matrix for one run.")
+    parser.add_argument("--sqlite-db", required=True, help="SQLite database path bootstrapped with init-sqlite-v1")
+    parser.add_argument("--request-json", help="Optional JSON file (or - for stdin) with the full checks payload")
+    parser.add_argument("--run-id", help="Run identifier to gate")
+    parser.add_argument("--step-run-id", help="Optional step_run identifier to attach to the check execution")
+    parser.add_argument("--artifact-root", help="Optional artifact root override")
+    parser.add_argument("--runtime-context-json", help="Optional JSON file (or - for stdin) with runtime_context overrides")
+    parser.add_argument("--check-id", action="append", dest="check_ids", help="Run only one applicable check id; may be repeated")
+    parser.add_argument("--json", action="store_true", help="Print machine-readable JSON output")
+    args = parser.parse_args(argv)
+
+    try:
+        payload = _load_json_argument(args.request_json) if args.request_json else {}
+        for key in ("run_id", "step_run_id", "artifact_root"):
+            value = getattr(args, key)
+            if value is not None:
+                payload[key] = value
+        if args.runtime_context_json:
+            payload["runtime_context"] = _load_json_argument(args.runtime_context_json)
+        if args.check_ids:
+            payload["check_ids"] = list(args.check_ids)
+        result = run_host_checks(args.sqlite_db, payload)
+    except HostCheckError as exc:
+        payload = {"ok": False, "stage": "host_checks", "error": exc.to_dict()}
+        if args.json:
+            print(json.dumps(payload, ensure_ascii=False, indent=2), file=sys.stderr)
+        else:
+            print(f"Host checks failed: {exc.message}", file=sys.stderr)
+            if exc.details:
+                print(f"Details: {exc.details}", file=sys.stderr)
+        return 1
+
+    payload = {
+        "ok": True,
+        "sqlite_db": str(Path(args.sqlite_db).expanduser().resolve()),
+        "host_checks": result.to_dict(),
+    }
+    if args.json:
+        print(json.dumps(payload, ensure_ascii=False, indent=2))
+    else:
+        print(f"Check run: {result.check_run_id}")
+        print(f"Verdict: {result.verdict}")
+        print(f"Run: {result.run_id}")
+        print(f"Summary: required_failed={result.summary.required_failed} advisory_failed={result.summary.advisory_failed} blocked={result.summary.blocked_total}")
+        print(f"Manifest: {result.manifest_path}")
+    return 0 if result.verdict == "green" else 1
+
+
+def main_show_host_check_results(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(description="Show persisted host-side check results for one run.")
+    parser.add_argument("--sqlite-db", required=True, help="SQLite database path bootstrapped with init-sqlite-v1")
+    parser.add_argument("run_id", help="Run identifier")
+    parser.add_argument("--limit", type=int, default=20, help="Maximum number of check executions to return")
+    parser.add_argument("--json", action="store_true", help="Print machine-readable JSON output")
+    args = parser.parse_args(argv)
+
+    try:
+        result = show_host_check_results(args.sqlite_db, args.run_id, limit=args.limit)
+    except HostCheckError as exc:
+        payload = {"ok": False, "stage": "host_checks", "error": exc.to_dict()}
+        if args.json:
+            print(json.dumps(payload, ensure_ascii=False, indent=2), file=sys.stderr)
+        else:
+            print(f"Host check result lookup failed: {exc.message}", file=sys.stderr)
+            if exc.details:
+                print(f"Details: {exc.details}", file=sys.stderr)
+        return 1
+
+    payload = {
+        "ok": True,
+        "sqlite_db": str(Path(args.sqlite_db).expanduser().resolve()),
+        "host_check_results": result.to_dict(),
+    }
+    if args.json:
+        print(json.dumps(payload, ensure_ascii=False, indent=2))
+    else:
+        print(f"Run: {result.run.run.id}")
+        print(f"Run status: {result.run.run.status}")
+        print(f"History entries: {len(result.history)}")
+        if result.latest_result is not None:
+            print(f"Latest verdict: {result.latest_result.verdict}")
+            print(f"Latest manifest: {result.latest_result.manifest_path}")
+    return 0
+
+
+def main_list_host_checks(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(description="List the applicable host-side checks for a run or package scope.")
+    parser.add_argument("--sqlite-db", help="SQLite database path bootstrapped with init-sqlite-v1")
+    parser.add_argument("--run-id", help="Run identifier")
+    parser.add_argument("--project-key", help="Registered project key used with --sqlite-db")
+    parser.add_argument("--package-root", help="Optional direct project package root")
+    parser.add_argument("--workflow-id", help="Required when using --project-key or --package-root")
+    parser.add_argument("--project-profile", help="Required when using --project-key or --package-root")
+    parser.add_argument("--json", action="store_true", help="Print machine-readable JSON output")
+    args = parser.parse_args(argv)
+
+    try:
+        result = list_host_checks(
+            database_path=args.sqlite_db,
+            run_id=args.run_id,
+            project_key=args.project_key,
+            package_root=args.package_root,
+            workflow_id=args.workflow_id,
+            project_profile=args.project_profile,
+        )
+    except (HostCheckError, ValueError) as exc:
+        if isinstance(exc, HostCheckError):
+            payload = {"ok": False, "stage": "host_checks", "error": exc.to_dict()}
+            message = exc.message
+            details = exc.details
+        else:
+            payload = {
+                "ok": False,
+                "stage": "host_checks",
+                "error": {"code": HOST_CHECKS_REQUEST_INVALID, "message": str(exc), "details": None},
+            }
+            message = str(exc)
+            details = None
+        if args.json:
+            print(json.dumps(payload, ensure_ascii=False, indent=2), file=sys.stderr)
+        else:
+            print(f"Host check selection failed: {message}", file=sys.stderr)
+            if details:
+                print(f"Details: {details}", file=sys.stderr)
+        return 1
+
+    payload = {
+        "ok": True,
+        "host_check_selection": result.to_dict(),
+    }
+    if args.json:
+        print(json.dumps(payload, ensure_ascii=False, indent=2))
+    else:
+        print(f"Project: {result.project_key}")
+        print(f"Workflow: {result.workflow_id}")
+        print(f"Project profile: {result.project_profile}")
+        print(f"Config block present: {result.config_block_present}")
+        print(f"Applicable checks: {len(result.selected_checks)}")
+        for check in result.selected_checks:
+            print(f"- {check.check_id} | {check.kind} | {check.severity}")
+    return 0
+
+
 def main_generate_bounded_contract(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Generate one bounded contract from approved project policy/templates.")
     parser.add_argument("--sqlite-db", required=True, help="SQLite database path bootstrapped with init-sqlite-v1")
@@ -2344,6 +2495,15 @@ def main() -> int:
     list_submitted_tasks_parser = subparsers.add_parser("list-submitted-tasks")
     list_submitted_tasks_parser.add_argument("args", nargs=argparse.REMAINDER)
 
+    run_host_checks_parser = subparsers.add_parser("run-host-checks")
+    run_host_checks_parser.add_argument("args", nargs=argparse.REMAINDER)
+
+    show_host_check_results_parser = subparsers.add_parser("show-host-check-results")
+    show_host_check_results_parser.add_argument("args", nargs=argparse.REMAINDER)
+
+    list_host_checks_parser = subparsers.add_parser("list-host-checks")
+    list_host_checks_parser.add_argument("args", nargs=argparse.REMAINDER)
+
     generate_bounded_contract_parser = subparsers.add_parser("generate-bounded-contract")
     generate_bounded_contract_parser.add_argument("args", nargs=argparse.REMAINDER)
 
@@ -2429,6 +2589,12 @@ def main() -> int:
         return main_show_submitted_task(args.args)
     if args.command == "list-submitted-tasks":
         return main_list_submitted_tasks(args.args)
+    if args.command == "run-host-checks":
+        return main_run_host_checks(args.args)
+    if args.command == "show-host-check-results":
+        return main_show_host_check_results(args.args)
+    if args.command == "list-host-checks":
+        return main_list_host_checks(args.args)
     if args.command == "generate-bounded-contract":
         return main_generate_bounded_contract(args.args)
     if args.command == "show-bounded-contract":

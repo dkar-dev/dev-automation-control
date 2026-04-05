@@ -16,6 +16,7 @@ from .run_persistence import RunPersistenceError
 from .runtime_cleanup_manager import CLEANUP_SCOPES, CleanupManagerError, run_cleanup_once
 from .step_run_persistence import StepRunPersistenceError, get_step_run
 from .task_intake import TaskIntakeError, list_submitted_tasks, show_submitted_task, submit_bounded_task
+from .host_checks import HostCheckError, run_host_checks, show_host_check_results
 from .worker_loop import WorkerLoopError, WorkerRuntimeConfig, run_worker_tick, run_worker_until_idle
 
 
@@ -47,6 +48,7 @@ _RUN_ACTION_PATH_RE = re.compile(
     r"^/v1/runs/(?P<run_id>[^/]+)/(?P<action>pause|resume|force-stop|rerun-step|control-state)$"
 )
 _CONTRACT_DETAIL_PATH_RE = re.compile(r"^/v1/contracts/(?P<contract_id>[^/]+)$")
+_CHECKS_DETAIL_PATH_RE = re.compile(r"^/v1/checks/(?P<run_id>[^/]+)$")
 _TASK_DETAIL_PATH_RE = re.compile(r"^/v1/tasks/(?P<run_id>[^/]+)$")
 
 
@@ -315,6 +317,18 @@ class ControlPlaneApiApplication:
         )
         return {"cleanup_pass": result.to_dict()}
 
+    def run_checks(self, payload: Mapping[str, object]) -> dict[str, object]:
+        request_payload = dict(payload)
+        if "artifact_root" not in request_payload and self.config.default_artifact_root is not None:
+            request_payload["artifact_root"] = str(self.config.default_artifact_root)
+        result = run_host_checks(self.config.sqlite_db, request_payload)
+        return {"host_checks": result.to_dict()}
+
+    def get_checks(self, run_id: str, query: Mapping[str, Sequence[str]]) -> dict[str, object]:
+        limit = _query_int(query, "limit", default=20)
+        result = show_host_check_results(self.config.sqlite_db, run_id, limit=limit)
+        return {"host_check_results": result.to_dict()}
+
     def _build_worker_runtime_config(self, payload: Mapping[str, object]) -> WorkerRuntimeConfig:
         runtime_context = payload.get("runtime_context")
         if runtime_context is not None and not isinstance(runtime_context, Mapping):
@@ -397,7 +411,7 @@ class ControlPlaneApiHandler(BaseHTTPRequestHandler):
             self._send_envelope(status, request_id, data=data, error=None)
         except ApiRequestError as exc:
             self._send_envelope(exc.http_status, request_id, data=None, error=exc.to_dict())
-        except (TaskIntakeError, WorkerLoopError, ManualControlError, CleanupManagerError, StepRunPersistenceError, RunPersistenceError, BoundedContractError) as exc:
+        except (TaskIntakeError, WorkerLoopError, ManualControlError, CleanupManagerError, StepRunPersistenceError, RunPersistenceError, BoundedContractError, HostCheckError) as exc:
             mapped = _map_domain_error(exc)
             self._send_envelope(mapped.http_status, request_id, data=None, error=mapped.to_dict())
         except Exception as exc:
@@ -454,6 +468,18 @@ class ControlPlaneApiHandler(BaseHTTPRequestHandler):
                 raise ApiRequestError(405, METHOD_NOT_ALLOWED, "method not allowed for contract detail endpoint")
             contract_id = unquote(contract_match.group("contract_id"))
             return 200, application.get_contract(contract_id)
+
+        if path == "/v1/checks/run":
+            if self.command != "POST":
+                raise ApiRequestError(405, METHOD_NOT_ALLOWED, "method not allowed for /v1/checks/run")
+            return 200, application.run_checks(self._read_json_body())
+
+        checks_match = _CHECKS_DETAIL_PATH_RE.match(path)
+        if checks_match is not None:
+            if self.command != "GET":
+                raise ApiRequestError(405, METHOD_NOT_ALLOWED, "method not allowed for check detail endpoint")
+            run_id = unquote(checks_match.group("run_id"))
+            return 200, application.get_checks(run_id, query)
 
         if path == "/v1/worker/tick":
             if self.command != "POST":
@@ -586,6 +612,8 @@ def _error_stage(exc: Exception) -> str:
         return "run_persistence"
     if isinstance(exc, BoundedContractError):
         return "bounded_contracts"
+    if isinstance(exc, HostCheckError):
+        return "host_checks"
     return "unknown"
 
 
@@ -602,6 +630,7 @@ def _http_status_for_error_code(code: str) -> int:
         "CONTRACT_CAPABILITY_NOT_APPROVED",
         "CONTRACT_RUNTIME_CONTEXT_MISSING",
         "CONTRACT_STATE_NOT_ALLOWED",
+        "HOST_CHECKS_RUN_SCOPE_INVALID",
         RUN_STEP_MISMATCH,
     }:
         return 409
@@ -612,6 +641,7 @@ def _http_status_for_error_code(code: str) -> int:
         "CONTRACT_TEMPLATE_INVALID",
         "CONTRACT_TEMPLATE_NOT_FOUND",
         "CONTRACT_TYPE_INVALID",
+        "HOST_CHECKS_REQUEST_INVALID",
     }:
         return 400
     if "INVALID" in code or "UNSUPPORTED" in code:

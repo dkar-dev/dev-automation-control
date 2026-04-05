@@ -125,6 +125,16 @@ Notes:
 `GET /v1/contracts/{contract_id}`
 - Show one persisted bounded contract, including normalized JSON, prompt text, manifest, and linked artifacts.
 
+`POST /v1/checks/run`
+- Run the host-side smoke/deploy checks matrix for one run.
+- Uses the same checks engine as `scripts/run-host-checks`.
+- Uses server default `artifact_root` when the request omits it.
+
+`GET /v1/checks/{run_id}`
+- Show persisted host-check execution history for one run.
+- Query params:
+  - `limit`
+
 `POST /v1/worker/tick`
 - Run one worker tick.
 - Request body may be `{}`.
@@ -221,6 +231,26 @@ curl -s http://127.0.0.1:8788/v1/contracts/generate \
       "instruction_profile": "default"
     }
   }'
+```
+
+Run host-side checks:
+
+```bash
+curl -s http://127.0.0.1:8788/v1/checks/run \
+  -H 'Content-Type: application/json' \
+  -d '{
+    "run_id": "<run-id>",
+    "runtime_context": {
+      "project_repo_path": "/home/dkar/workspace/project"
+    },
+    "check_ids": ["api-health"]
+  }'
+```
+
+Show host-side check history:
+
+```bash
+curl -s http://127.0.0.1:8788/v1/checks/<run-id>
 ```
 
 Resume in stabilize mode:

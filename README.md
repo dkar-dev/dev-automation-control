@@ -18,6 +18,7 @@ This repo is the control plane for local orchestration between `n8n`, operator t
 - The v2 scaffold now also includes a thin localhost-only HTTP API v1, so `n8n` and other local automations can call intake, worker, manual-control, and cleanup primitives over stable JSON endpoints.
 - The v2 scaffold now also includes an importable n8n workflow package v1 over that HTTP API, so n8n can stay a thin orchestration client instead of embedding control-plane logic.
 - The v2 scaffold now also includes a bounded-contract generation engine v1, so approved policy/templates can be rendered into normalized machine-readable contracts and Codex-ready prompts without changing architecture or workflow semantics.
+- The v2 scaffold now also includes a bounded host-side checks matrix v1, so reviewer-approved runs can be verified on the host and gated to `green | not_green | blocked` without adding Kubernetes or cluster orchestration.
 - Cutover from the legacy bridge transport to the v2 HTTP API is controlled and partial; the backend runner layer remains intentionally legacy.
 - The first executable v2 utilities now live in:
   - `scripts/validate-project-package`
@@ -63,6 +64,9 @@ This repo is the control plane for local orchestration between `n8n`, operator t
   - `scripts/list-contract-templates`
   - `scripts/generate-bounded-contract`
   - `scripts/show-bounded-contract`
+  - `scripts/list-host-checks`
+  - `scripts/run-host-checks`
+  - `scripts/show-host-check-results`
   - `scripts/smoke-control-plane-v2.sh`
   - `scripts/smoke-control-plane-v2-sqlite-migrations.sh`
   - `scripts/smoke-control-plane-v2-dispatch.sh`
@@ -72,12 +76,14 @@ This repo is the control plane for local orchestration between `n8n`, operator t
   - `scripts/smoke-control-plane-v2-intake.sh`
   - `scripts/smoke-control-plane-v2-api.sh`
   - `scripts/smoke-control-plane-v2-contracts.sh`
+  - `scripts/smoke-control-plane-v2-host-checks.sh`
   - `scripts/smoke-control-plane-v2-n8n-binding.sh`
 - Operator/dev usage notes for those utilities are in:
   - [`docs/control-plane-v2/bootstrap-and-validation.md`](/home/dkar/workspace/control/docs/control-plane-v2/bootstrap-and-validation.md)
   - [`docs/control-plane-v2/manual-dispatch.md`](/home/dkar/workspace/control/docs/control-plane-v2/manual-dispatch.md)
   - [`docs/control-plane-v2/local-http-api.md`](/home/dkar/workspace/control/docs/control-plane-v2/local-http-api.md)
   - [`docs/control-plane-v2/bounded-contract-generation.md`](/home/dkar/workspace/control/docs/control-plane-v2/bounded-contract-generation.md)
+  - [`docs/control-plane-v2/host-checks.md`](/home/dkar/workspace/control/docs/control-plane-v2/host-checks.md)
   - [`docs/control-plane-v2/orchestration-cutover.md`](/home/dkar/workspace/control/docs/control-plane-v2/orchestration-cutover.md)
   - [`docs/deprecations/legacy-bridge-orchestration.md`](/home/dkar/workspace/control/docs/deprecations/legacy-bridge-orchestration.md)
   - [`docs/n8n/README.md`](/home/dkar/workspace/control/docs/n8n/README.md)
@@ -102,6 +108,7 @@ This repo is the control plane for local orchestration between `n8n`, operator t
 - Submit bounded work with `POST /v1/tasks/submit` or `./scripts/submit-bounded-task`
 - Generate bounded contracts with `POST /v1/contracts/generate` or `./scripts/generate-bounded-contract`
 - Progress execution with `POST /v1/worker/tick`, `POST /v1/worker/run-until-idle`, `./scripts/run-worker-tick`, or `./scripts/run-worker-until-idle`
+- Run the host-side deploy gate with `POST /v1/checks/run`, `GET /v1/checks/{run_id}`, `./scripts/run-host-checks`, or `./scripts/show-host-check-results`
 - Use manual control through `GET /v1/runs/{run_id}/control-state` plus `POST /v1/runs/{run_id}/{pause|resume|force-stop|rerun-step}`
 - Run retention cleanup with `POST /v1/cleanup/run-once`, `./scripts/list-cleanup-candidates`, `./scripts/run-cleanup-once`, or `./scripts/show-cleanup-status`
 - Cutover mapping: [`docs/control-plane-v2/orchestration-cutover.md`](/home/dkar/workspace/control/docs/control-plane-v2/orchestration-cutover.md)
@@ -121,6 +128,7 @@ This repo is the control plane for local orchestration between `n8n`, operator t
 - The backend runner layer still uses `control/scripts/run-executor.sh` and `control/scripts/run-reviewer.sh` on the host/WSL side, where Codex, worktrees, runtime, and project paths actually exist.
 - The v2 manual dispatch adapter reuses those same host-side scripts, but runs them inside an isolated per-dispatch sandbox and disables reviewer semantic auto-completion for the v2 reviewer path.
 - After a v2 reviewer dispatch finishes, `scripts/ingest-reviewer-result` can extract the semantic verdict from stored reviewer artifacts and close the v2 outcome chain.
+- `scripts/run-host-checks` and `POST /v1/checks/run` intentionally stay outside reviewer semantics. In v1, treat deployable green as a separate host-side gate that runs after reviewer approval and before any final green decision.
 - `scripts/run-worker-tick` and `scripts/run-worker-until-idle` now chain claim -> dispatch -> ingestion on a single host process, but they do not add daemonization or multi-worker fencing.
 - `scripts/submit-bounded-task` creates a root run plus persisted submission/runtime-context manifests, so `scripts/run-worker-tick` can pick up the queued run later without a separate `context.json`.
 - `scripts/pause-run`, `scripts/resume-run`, `scripts/force-stop-run`, and `scripts/rerun-run-step` provide the bounded v1 manual recovery layer over the same run/queue/step primitives.

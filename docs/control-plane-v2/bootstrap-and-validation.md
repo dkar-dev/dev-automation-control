@@ -91,12 +91,16 @@ SQLite migration behavior in this step:
   - legacy untracked v1 baseline schema
   - legacy untracked v2 schema that already includes manual-control `paused` state but lacks `schema_migrations`
   - legacy untracked v3 schema that already includes cleanup audit columns/tables but lacks `schema_migrations`
+  - legacy untracked v4 schema that already includes `contract_manifests` but lacks `schema_migrations`
+  - legacy untracked v5 schema that already includes `host_check_runs` but lacks `schema_migrations`
 - invalid or partial migration history fails closed with an explicit error instead of silently guessing
 
 Current migration chain:
 - `0001_baseline.sql`: original pre-manual-control schema
 - `0002_manual_control_paused.sql`: upgrades run and queue status constraints for paused-state support
 - `0003_runtime_cleanup_audit.sql`: adds cleanup audit columns on `artifact_refs` plus `runtime_cleanup_records`
+- `0004_bounded_contract_manifests.sql`: adds append-only bounded-contract manifest history
+- `0005_host_check_runs.sql`: adds append-only host-check execution history
 
 What is not supported in this step:
 - downgrades
@@ -910,6 +914,55 @@ The intake smoke verifies:
 - submission overrides for overlays, source, and thread label
 - worker pickup without a separate dispatch `context.json`
 
+## Host-side checks matrix v1
+
+List the applicable host-side checks for one run:
+
+```bash
+cd /home/dkar/workspace/control
+./scripts/list-host-checks \
+  --sqlite-db /tmp/control-plane-v2.sqlite \
+  --run-id <run-id> \
+  --json
+```
+
+Run the host-side checks gate:
+
+```bash
+cd /home/dkar/workspace/control
+./scripts/run-host-checks \
+  --sqlite-db /tmp/control-plane-v2.sqlite \
+  --run-id <run-id> \
+  --runtime-context-json /tmp/runtime-context.json \
+  --json
+```
+
+Show persisted check history for one run:
+
+```bash
+cd /home/dkar/workspace/control
+./scripts/show-host-check-results \
+  --sqlite-db /tmp/control-plane-v2.sqlite \
+  <run-id> \
+  --json
+```
+
+Host-check behavior in this step:
+- config source is `runtime.yaml.host_checks_v1`
+- supported kinds are:
+  - `command_check`
+  - `http_check`
+  - `file_check`
+  - `process_check`
+- result history is append-only in SQLite table `host_check_runs`
+- manifest artifacts are also recorded in `artifact_refs` as `host_check_manifest`
+- verdict rules are:
+  - all required checks pass => `green`
+  - any required failure => `not_green`
+  - invalid config / impossible execution / missing prerequisites => `blocked`
+- reviewer approval remains separate; in v1, run host checks after a reviewer-approved path and before treating the run as deployable green
+- this layer is host-side verification only; it is not cluster deployment orchestration
+
 Run the focused local HTTP API smoke:
 
 ```bash
@@ -922,9 +975,24 @@ The HTTP API smoke verifies:
 - malformed JSON failure
 - task submit/list/show through HTTP
 - bounded contract generate/show through HTTP
+- host-side checks run/show through HTTP
 - worker tick and run-until-idle through HTTP
 - pause/resume/force-stop through HTTP
 - cleanup dry-run through HTTP
+
+Run the focused host-checks smoke:
+
+```bash
+cd /home/dkar/workspace/control
+./scripts/smoke-control-plane-v2-host-checks.sh
+```
+
+The host-checks smoke verifies:
+- required command check pass
+- required command check fail
+- advisory failure does not block green
+- timeout handling is explicit
+- persisted results are visible through CLI and HTTP
 
 ## Boundaries of this step
 - No daemonized worker/service manager.
