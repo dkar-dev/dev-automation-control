@@ -7,6 +7,7 @@ from pathlib import Path
 import sqlite3
 
 from .project_registry import RegisteredProject
+from .runtime_event_journal import RuntimeEventAppendRequest, insert_runtime_event_in_connection
 from .run_persistence import PRIORITY_CLASSES, QueueItemRecord, RunSummary, StateTransitionRecord, _row_to_run_summary
 from .step_run_persistence import _insert_state_transition
 
@@ -229,6 +230,28 @@ def claim_next_run(
                 transition_type=PROVISIONAL_QUEUE_CLAIM_FOR_DISPATCH_TRANSITION_TYPE,
                 created_at=evaluated_at,
                 metadata=transition_metadata,
+            )
+            insert_runtime_event_in_connection(
+                connection,
+                database_path=resolved_db_path,
+                request=RuntimeEventAppendRequest(
+                    event_type="run_claimed",
+                    entity_type="run",
+                    entity_id=str(row["id"]),
+                    project_key=str(row["project_key"]),
+                    flow_id=str(row["flow_id"]),
+                    run_id=str(row["id"]),
+                    severity="info",
+                    summary=f"Run claimed for dispatch: {row['id']}",
+                    payload_redacted={
+                        "queue_item_id": str(row["queue_item_id"]),
+                        "priority_class": str(row["priority_class"]),
+                        "effective_age_seconds": _round_effective_age(row["effective_age_seconds"]),
+                        "scheduler_evaluated_at": evaluated_at,
+                    },
+                    source_module="scheduler_persistence",
+                    created_at=evaluated_at,
+                ),
             )
             connection.commit()
         except Exception:

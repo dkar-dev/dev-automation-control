@@ -25,6 +25,7 @@ This keeps v1 bounded and single-node while still making API and worker failures
 - write the active PID file
 - persist structured runtime state JSON
 - append structured runtime events to a JSONL log
+- append bounded runtime lifecycle events into the SQLite runtime event journal
 - run the existing localhost API on `127.0.0.1` / `localhost`
 - run bounded worker cycles continuously with a configurable poll interval
 - thread the runtime root and optional local secrets file into the API and worker runtime config
@@ -144,6 +145,7 @@ All commands support `--json` for machine-readable output.
 - worker summaries: `<worker-log-root>/ticks` and `<worker-log-root>/loops` via the existing worker loop
 
 The events log uses simple size-based rotation with one `.1` backup. v1 intentionally stops there.
+The SQLite runtime event journal is the polling-friendly cross-module feed; the JSONL log remains the supervisor-local diagnostic trace.
 
 ## How this fits the approved v1 shape
 - one dedicated Linux machine

@@ -4,7 +4,8 @@
 - This is the thin v1 transport boundary for the existing Control Plane v2 primitives.
 - This is the preferred local orchestration/control boundary for v1 operators, `n8n`, and local automations.
 - It is intended for localhost-only use from `n8n`, local automations, and other single-machine triggers.
-- It does not replace the existing CLI utilities; it routes requests into the same intake, bounded-contract generation, host-checks, deployable-green decision, release-handoff export, worker, manual-control, and cleanup modules.
+- It does not replace the existing CLI utilities; it routes requests into the same intake, bounded-contract generation, host-checks, deployable-green decision, release-handoff export, worker, manual-control, cleanup, and runtime-event-journal modules.
+- The same localhost API also exposes the append-only runtime event feed for operator and `n8n` polling.
 - The legacy bridge on `127.0.0.1:8787` is deprecated as an orchestration transport.
 - Legacy executor/reviewer runner scripts remain backend implementations behind the dispatch adapter and worker loop.
 
@@ -123,6 +124,19 @@ Notes:
 - Accepts the same selector fields as the status endpoint in the JSON body.
 - Never returns raw secret values.
 
+`GET /v1/events`
+- List append-only runtime journal events.
+- Query params:
+  - `limit`
+  - `project_key`
+  - `flow_id`
+  - `run_id`
+  - `event_type`
+  - `created_after`
+
+`GET /v1/events/{event_id}`
+- Show one append-only runtime journal event.
+
 `POST /v1/tasks/submit`
 - Submit one bounded task through the intake layer.
 - Uses server default `artifact_root` and `workspace_root` when the request omits them.
@@ -225,6 +239,8 @@ Notes:
   - `dry_run`
   - `now`
   - `scopes`
+
+Journal taxonomy, redaction rules, and polling guidance live in [`docs/control-plane-v2/runtime-event-journal.md`](/home/dkar/workspace/control/docs/control-plane-v2/runtime-event-journal.md).
 
 ## Example payloads
 
@@ -390,7 +406,8 @@ Boundary for the n8n package:
 Recommended first v1 flow for `n8n`:
 1. `POST /v1/tasks/submit`
 2. `POST /v1/worker/tick` or `POST /v1/worker/run-until-idle`
-3. `GET /v1/tasks/{run_id}` or `GET /v1/runs/{run_id}/control-state` for operator inspection
+3. `GET /v1/events?run_id={run_id}&created_after=...` for polling-friendly lifecycle updates
+4. `GET /v1/tasks/{run_id}` or `GET /v1/runs/{run_id}/control-state` for operator drill-down
 
 ## Smoke check
 
@@ -417,6 +434,7 @@ This smoke verifies:
 - local server startup
 - `GET /v1/health`
 - malformed JSON failure
+- runtime event list/detail/filter through HTTP and CLI
 - task submit/list/show through HTTP
 - bounded contract generate/show through HTTP
 - worker tick and run-until-idle through HTTP

@@ -13,6 +13,7 @@ from .bounded_contracts import BoundedContractError, generate_bounded_contract, 
 from .id_generation import generate_opaque_id
 from .manual_control import ManualControlError, force_stop_run, pause_run, rerun_run_step, resume_run, show_run_control_state
 from .run_persistence import RunPersistenceError
+from .runtime_event_journal import RuntimeEventJournalError, get_runtime_event, list_runtime_events
 from .runtime_cleanup_manager import CLEANUP_SCOPES, CleanupManagerError, run_cleanup_once
 from .runtime_secrets import RuntimeValueResolutionError, resolve_runtime_value_bundle_for_selector
 from .step_run_persistence import StepRunPersistenceError, get_step_run
@@ -57,6 +58,7 @@ _CHECKS_DETAIL_PATH_RE = re.compile(r"^/v1/checks/(?P<run_id>[^/]+)$")
 _GREEN_DETAIL_PATH_RE = re.compile(r"^/v1/green/(?P<run_id>[^/]+)$")
 _RELEASE_HANDOFF_DETAIL_PATH_RE = re.compile(r"^/v1/release-handoff/(?P<run_id>[^/]+)$")
 _TASK_DETAIL_PATH_RE = re.compile(r"^/v1/tasks/(?P<run_id>[^/]+)$")
+_EVENT_DETAIL_PATH_RE = re.compile(r"^/v1/events/(?P<event_id>[^/]+)$")
 
 
 @dataclass(frozen=True)
@@ -402,6 +404,22 @@ class ControlPlaneApiApplication:
         result = show_release_handoff(self.config.sqlite_db, run_id, limit=limit)
         return {"release_handoffs": result.to_dict()}
 
+    def list_events(self, query: Mapping[str, Sequence[str]]) -> dict[str, object]:
+        result = list_runtime_events(
+            self.config.sqlite_db,
+            limit=_query_int(query, "limit", default=100),
+            project_key=_query_single(query, "project_key"),
+            flow_id=_query_single(query, "flow_id"),
+            run_id=_query_single(query, "run_id"),
+            event_type=_query_single(query, "event_type"),
+            created_after=_query_single(query, "created_after"),
+        )
+        return {"runtime_events": [item.to_dict() for item in result]}
+
+    def get_event(self, event_id: str) -> dict[str, object]:
+        result = get_runtime_event(self.config.sqlite_db, event_id)
+        return {"runtime_event": result.to_dict()}
+
     def _build_worker_runtime_config(self, payload: Mapping[str, object]) -> WorkerRuntimeConfig:
         runtime_context = payload.get("runtime_context")
         if runtime_context is not None and not isinstance(runtime_context, Mapping):
@@ -494,7 +512,7 @@ class ControlPlaneApiHandler(BaseHTTPRequestHandler):
             self._send_envelope(status, request_id, data=data, error=None)
         except ApiRequestError as exc:
             self._send_envelope(exc.http_status, request_id, data=None, error=exc.to_dict())
-        except (TaskIntakeError, WorkerLoopError, ManualControlError, CleanupManagerError, StepRunPersistenceError, RunPersistenceError, BoundedContractError, HostCheckError, DeployableGreenError, ReleaseHandoffError, RuntimeValueResolutionError) as exc:
+        except (TaskIntakeError, WorkerLoopError, ManualControlError, CleanupManagerError, StepRunPersistenceError, RunPersistenceError, BoundedContractError, HostCheckError, DeployableGreenError, ReleaseHandoffError, RuntimeValueResolutionError, RuntimeEventJournalError) as exc:
             mapped = _map_domain_error(exc)
             self._send_envelope(mapped.http_status, request_id, data=None, error=mapped.to_dict())
         except Exception as exc:
@@ -530,6 +548,11 @@ class ControlPlaneApiHandler(BaseHTTPRequestHandler):
             if self.command != "POST":
                 raise ApiRequestError(405, METHOD_NOT_ALLOWED, "method not allowed for /v1/runtime/secrets/check")
             return 200, application.check_runtime_secrets(self._read_json_body())
+
+        if path == "/v1/events":
+            if self.command != "GET":
+                raise ApiRequestError(405, METHOD_NOT_ALLOWED, "method not allowed for /v1/events")
+            return 200, application.list_events(query)
 
         if path == "/v1/tasks":
             if self.command == "GET":
@@ -597,6 +620,13 @@ class ControlPlaneApiHandler(BaseHTTPRequestHandler):
                 raise ApiRequestError(405, METHOD_NOT_ALLOWED, "method not allowed for release handoff detail endpoint")
             run_id = unquote(release_handoff_match.group("run_id"))
             return 200, application.get_release_handoff(run_id, query)
+
+        event_match = _EVENT_DETAIL_PATH_RE.match(path)
+        if event_match is not None:
+            if self.command != "GET":
+                raise ApiRequestError(405, METHOD_NOT_ALLOWED, "method not allowed for runtime event detail endpoint")
+            event_id = unquote(event_match.group("event_id"))
+            return 200, application.get_event(event_id)
 
         if path == "/v1/worker/tick":
             if self.command != "POST":
@@ -737,6 +767,8 @@ def _error_stage(exc: Exception) -> str:
         return "release_handoff"
     if isinstance(exc, RuntimeValueResolutionError):
         return "runtime_secrets"
+    if isinstance(exc, RuntimeEventJournalError):
+        return "runtime_event_journal"
     return "unknown"
 
 
@@ -776,8 +808,11 @@ def _http_status_for_error_code(code: str) -> int:
         "RUNTIME_VALUE_CONFIG_INVALID",
         "RUNTIME_VALUE_REQUEST_INVALID",
         "RUNTIME_VALUE_LOCAL_FILE_INVALID",
+        "RUNTIME_EVENT_REQUEST_INVALID",
     }:
         return 400
+    if code == "RUNTIME_EVENT_NOT_FOUND":
+        return 404
     if "INVALID" in code or "UNSUPPORTED" in code:
         return 400
     return 500

@@ -7,6 +7,7 @@ from pathlib import Path
 import sqlite3
 
 from .id_generation import generate_opaque_id, generate_queue_item_id, generate_run_id
+from .runtime_event_journal import RuntimeEventAppendRequest, insert_runtime_event_in_connection
 from .run_persistence import (
     RunDetails,
     RunSummary,
@@ -298,6 +299,7 @@ def complete_reviewer_outcome(
                         summary_text=normalized_summary,
                         created_at=now,
                         follow_up_run_id=follow_up_run_id,
+                        database_path=resolved_db_path,
                     )
                     run_transition_id = _transition_run_to_terminal(
                         connection,
@@ -412,6 +414,38 @@ def complete_reviewer_outcome(
                     guardrails=guardrails,
                     stop_reason_code=outcome_stop_reason_code,
                     stop_reason=outcome_stop_reason,
+                ),
+            )
+            insert_runtime_event_in_connection(
+                connection,
+                database_path=resolved_db_path,
+                request=RuntimeEventAppendRequest(
+                    event_type="reviewer_outcome_completed",
+                    entity_type="run",
+                    entity_id=reviewer_step.run_id,
+                    project_key=str(run_row["project_key"]),
+                    flow_id=str(run_row["flow_id"]),
+                    run_id=reviewer_step.run_id,
+                    step_run_id=reviewer_step.id,
+                    severity=(
+                        "info"
+                        if normalized_verdict == "approved"
+                        else ("error" if normalized_verdict == "blocked" else "warning")
+                    ),
+                    summary=(
+                        f"Reviewer outcome completed for run {reviewer_step.run_id}: "
+                        f"{normalized_verdict}"
+                    ),
+                    payload_redacted={
+                        "verdict": normalized_verdict,
+                        "reviewer_step_run_id": reviewer_step.id,
+                        "reviewer_step_status": reviewer_step.status,
+                        "follow_up_run_id": follow_up_run_id,
+                        "continuation_allowed": follow_up_run_id is not None,
+                        "stop_reason_code": outcome_stop_reason_code,
+                    },
+                    source_module="reviewer_outcome_persistence",
+                    created_at=now,
                 ),
             )
 
@@ -718,6 +752,7 @@ def _handle_changes_requested_followup(
     summary_text: str | None,
     created_at: str,
     follow_up_run_id: str,
+    database_path: Path,
 ) -> str:
     queue_item_id = generate_queue_item_id()
     connection.execute(
@@ -811,6 +846,34 @@ def _handle_changes_requested_followup(
             "origin_step_run_id": reviewer_step.id,
         },
         created_at=created_at,
+    )
+    insert_runtime_event_in_connection(
+        connection,
+        database_path=database_path,
+        request=RuntimeEventAppendRequest(
+            event_type="run_created",
+            entity_type="run",
+            entity_id=follow_up_run_id,
+            project_key=str(run_row["project_key"]),
+            flow_id=str(run_row["flow_id"]),
+            run_id=follow_up_run_id,
+            step_run_id=reviewer_step.id,
+            severity="warning",
+            summary=f"Follow-up run created after reviewer changes requested: {follow_up_run_id}",
+            payload_redacted={
+                "origin_type": PROVISIONAL_REVIEWER_FOLLOWUP_ORIGIN_TYPE,
+                "origin_run_id": str(run_row["id"]),
+                "origin_step_run_id": reviewer_step.id,
+                "reviewer_verdict": "changes_requested",
+                "project_profile": str(run_row["project_profile"]),
+                "workflow_id": str(run_row["workflow_id"]),
+                "milestone": str(run_row["milestone"]),
+                "priority_class": PROVISIONAL_REVIEWER_FOLLOWUP_PRIORITY_CLASS,
+                "summary_present": summary_text is not None,
+            },
+            source_module="reviewer_outcome_persistence",
+            created_at=created_at,
+        ),
     )
     return run_transition_id
 

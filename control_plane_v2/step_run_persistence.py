@@ -6,6 +6,7 @@ from pathlib import Path
 import sqlite3
 
 from .id_generation import generate_opaque_id, generate_state_transition_id
+from .runtime_event_journal import RuntimeEventAppendRequest, insert_runtime_event_in_connection
 from .run_persistence import (
     QUEUE_ITEM_STATUSES,
     RUN_STATUSES,
@@ -209,6 +210,30 @@ def start_step_run(database_path: str | Path, run_id: str, step_key: str) -> Ste
                 created_at=now,
                 metadata={"attempt_no": 1, "step_key": normalized_step_key},
             )
+            insert_runtime_event_in_connection(
+                connection,
+                database_path=resolved_db_path,
+                request=RuntimeEventAppendRequest(
+                    event_type="step_run_started",
+                    entity_type="step_run",
+                    entity_id=step_run_id,
+                    project_key=str(run_row["project_key"]),
+                    flow_id=str(run_row["flow_id"]),
+                    run_id=normalized_run_id,
+                    step_run_id=step_run_id,
+                    severity="info",
+                    summary=f"Step {normalized_step_key} started for run {normalized_run_id}",
+                    payload_redacted={
+                        "step_key": normalized_step_key,
+                        "attempt_no": 1,
+                        "run_status": str(run_row["status"]),
+                        "queue_status": str(run_row["queue_status"]),
+                        "started_via": "start",
+                    },
+                    source_module="step_run_persistence",
+                    created_at=now,
+                ),
+            )
 
             connection.commit()
         except Exception:
@@ -283,6 +308,31 @@ def finish_step_run(database_path: str | Path, step_run_id: str, status: str) ->
                 transition_type=PROVISIONAL_STEP_RUN_FINISH_TRANSITION_TYPE,
                 created_at=now,
                 metadata={"step_key": existing_step_run.step_key},
+            )
+            insert_runtime_event_in_connection(
+                connection,
+                database_path=resolved_db_path,
+                request=RuntimeEventAppendRequest(
+                    event_type="step_run_finished",
+                    entity_type="step_run",
+                    entity_id=normalized_step_run_id,
+                    project_key=existing_step_run.project_key,
+                    flow_id=existing_step_run.flow_id,
+                    run_id=existing_step_run.run_id,
+                    step_run_id=normalized_step_run_id,
+                    severity="info" if terminal_status == "succeeded" else "warning",
+                    summary=(
+                        f"Step {existing_step_run.step_key} finished with "
+                        f"{terminal_status} for run {existing_step_run.run_id}"
+                    ),
+                    payload_redacted={
+                        "step_key": existing_step_run.step_key,
+                        "attempt_no": existing_step_run.attempt_no,
+                        "status": terminal_status,
+                    },
+                    source_module="step_run_persistence",
+                    created_at=now,
+                ),
             )
             connection.commit()
         except Exception:
@@ -424,6 +474,34 @@ def retry_step_run(database_path: str | Path, previous_step_run_id: str) -> Step
                     "previous_step_run_id": previous_step_run.id,
                     "step_key": previous_step_run.step_key,
                 },
+            )
+            insert_runtime_event_in_connection(
+                connection,
+                database_path=resolved_db_path,
+                request=RuntimeEventAppendRequest(
+                    event_type="step_run_started",
+                    entity_type="step_run",
+                    entity_id=new_step_run_id,
+                    project_key=str(run_row["project_key"]),
+                    flow_id=str(run_row["flow_id"]),
+                    run_id=previous_step_run.run_id,
+                    step_run_id=new_step_run_id,
+                    severity="info",
+                    summary=(
+                        f"Step {previous_step_run.step_key} retry started "
+                        f"for run {previous_step_run.run_id}"
+                    ),
+                    payload_redacted={
+                        "step_key": previous_step_run.step_key,
+                        "attempt_no": next_attempt_no,
+                        "previous_step_run_id": previous_step_run.id,
+                        "run_status": str(run_row["status"]),
+                        "queue_status": str(run_row["queue_status"]),
+                        "started_via": "retry",
+                    },
+                    source_module="step_run_persistence",
+                    created_at=now,
+                ),
             )
 
             connection.commit()

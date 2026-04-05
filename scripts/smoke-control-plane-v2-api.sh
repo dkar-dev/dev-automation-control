@@ -51,6 +51,13 @@ bounded_task_runtime_v1:
   auto_commit: false
   source: api-config-source
   thread_label: api-config-thread
+runtime_value_refs_v1:
+  values:
+    smoke_secret:
+      classification: secret
+      required: true
+      refs:
+        - env:CPV2_API_SMOKE_SECRET
 host_checks_v1:
   checks:
     - id: required_pass
@@ -192,6 +199,7 @@ EOF
 chmod +x "$TMP_ROOT/fakebin/codex"
 
 export PATH="$TMP_ROOT/fakebin:$PATH"
+export CPV2_API_SMOKE_SECRET="api-smoke-secret-value-123"
 
 DB_PATH="$TMP_ROOT/control-plane-v2.sqlite"
 "$CONTROL_DIR/scripts/init-sqlite-v1" "$DB_PATH" >/dev/null
@@ -224,6 +232,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+import subprocess
 import sys
 import time
 import urllib.error
@@ -235,6 +244,8 @@ control_dir = Path(sys.argv[1]).resolve()
 tmp_root = Path(sys.argv[2]).resolve()
 port = int(sys.argv[3])
 base_url = f"http://127.0.0.1:{port}"
+db_path = tmp_root / "control-plane-v2.sqlite"
+secret_value = "api-smoke-secret-value-123"
 
 
 def request_json(
@@ -268,6 +279,20 @@ def request_json(
     if "request_id" not in payload_json or not payload_json["request_id"]:
         raise SystemExit(f"Missing request_id in response for {method} {path}")
     return payload_json
+
+
+def run_cli_json(*args: str) -> dict:
+    proc = subprocess.run(
+        [str(control_dir / "scripts" / args[0]), *[str(item) for item in args[1:]]],
+        cwd=control_dir,
+        text=True,
+        capture_output=True,
+    )
+    if proc.returncode != 0:
+        raise SystemExit(
+            f"CLI command failed: {' '.join(args)}\nstdout:\n{proc.stdout}\n\nstderr:\n{proc.stderr}"
+        )
+    return json.loads(proc.stdout)
 
 
 for _ in range(60):
@@ -309,6 +334,7 @@ submit_response = request_json("POST", "/v1/tasks/submit", payload=submit_payloa
 assert submit_response["ok"] is True, submit_response
 submitted_task = submit_response["data"]["submitted_task"]
 run_id = submitted_task["run_details"]["run"]["id"]
+flow_id = submitted_task["run_details"]["run"]["flow_id"]
 assert submitted_task["runtime_context"]["workspace_root"] == str(tmp_root), submitted_task
 assert submitted_task["runtime_context"]["artifact_root"] == str(tmp_root / "artifacts"), submitted_task
 assert submitted_task["runtime_context"]["source"] == "http-submit", submitted_task
@@ -398,6 +424,74 @@ assert release_handoff["data"]["release_handoff"]["commit_sha"], release_handoff
 release_handoff_history = request_json("GET", f"/v1/release-handoff/{urllib.parse.quote(run_id)}")
 assert release_handoff_history["data"]["release_handoffs"]["latest_bundle"]["bundle_id"] == release_handoff["data"]["release_handoff"]["bundle_id"], release_handoff_history
 assert release_handoff_history["data"]["release_handoffs"]["latest_bundle"]["commit_sha"] == release_handoff["data"]["release_handoff"]["commit_sha"], release_handoff_history
+
+event_feed = request_json("GET", f"/v1/events?run_id={urllib.parse.quote(run_id)}&limit=50")
+run_events = event_feed["data"]["runtime_events"]
+assert run_events, event_feed
+event_types = {item["event_type"] for item in run_events}
+for expected_type in {
+    "task_submitted",
+    "run_created",
+    "run_claimed",
+    "step_run_started",
+    "step_run_finished",
+    "reviewer_outcome_completed",
+    "host_checks_completed",
+    "deployable_green_decided",
+    "release_handoff_created",
+}:
+    assert expected_type in event_types, {"missing": expected_type, "event_types": sorted(event_types)}
+
+host_event_feed = request_json(
+    "GET",
+    f"/v1/events?project_key=demo&flow_id={urllib.parse.quote(flow_id)}&event_type=host_checks_completed&limit=10",
+)
+host_events = host_event_feed["data"]["runtime_events"]
+assert len(host_events) == 1, host_event_feed
+host_event_id = host_events[0]["event_id"]
+host_event_detail = request_json("GET", f"/v1/events/{urllib.parse.quote(host_event_id)}")
+assert host_event_detail["data"]["runtime_event"]["event_type"] == "host_checks_completed", host_event_detail
+
+oldest_created_at = run_events[-1]["created_at"]
+newer_events = request_json(
+    "GET",
+    f"/v1/events?run_id={urllib.parse.quote(run_id)}&created_after={urllib.parse.quote(oldest_created_at)}&limit=50",
+)
+assert 0 < len(newer_events["data"]["runtime_events"]) < len(run_events), newer_events
+
+cli_event_list = run_cli_json(
+    "list-runtime-events",
+    "--sqlite-db",
+    str(db_path),
+    "--run-id",
+    run_id,
+    "--limit",
+    "50",
+    "--json",
+)
+cli_event_types = {item["event_type"] for item in cli_event_list["runtime_events"]}
+assert event_types <= cli_event_types, cli_event_list
+
+cli_host_event = run_cli_json(
+    "show-runtime-event",
+    "--sqlite-db",
+    str(db_path),
+    host_event_id,
+    "--json",
+)
+assert cli_host_event["runtime_event"]["event_id"] == host_event_id, cli_host_event
+assert cli_host_event["runtime_event"]["payload_redacted"]["verdict"] == "green", cli_host_event
+
+serialized_event_views = json.dumps(
+    {
+        "http_feed": run_events,
+        "http_host_detail": host_event_detail["data"]["runtime_event"],
+        "cli_feed": cli_event_list["runtime_events"],
+        "cli_host_detail": cli_host_event["runtime_event"],
+    },
+    ensure_ascii=False,
+)
+assert secret_value not in serialized_event_views, serialized_event_views
 
 idle_loop = request_json("POST", "/v1/worker/run-until-idle", payload={"max_ticks": 5})
 assert idle_loop["data"]["worker_loop"]["ended_reason"] == "idle", idle_loop

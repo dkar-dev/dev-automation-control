@@ -11,6 +11,7 @@ import sqlite3
 
 from .host_checks import HostCheckError, HostCheckSummary, show_host_check_results
 from .id_generation import generate_opaque_id
+from .runtime_event_journal import RuntimeEventAppendRequest, insert_runtime_event_in_connection
 from .reviewer_outcome_persistence import (
     PROVISIONAL_REVIEWER_APPROVED_TRANSITION_TYPE,
     PROVISIONAL_REVIEWER_BLOCKED_TRANSITION_TYPE,
@@ -343,6 +344,7 @@ def decide_deployable_green(
         next_action_hint=evaluation.next_action_hint,
         manifest_path=manifest_path,
         created_at=created_at,
+        decision_rule=evaluation.rule,
     )
     artifacts = _record_decision_artifacts(
         resolved_db_path,
@@ -772,6 +774,7 @@ def _insert_decision_row(
     next_action_hint: str | None,
     manifest_path: Path,
     created_at: str,
+    decision_rule: str,
 ) -> None:
     connection = _connect_run_db(database_path)
     try:
@@ -828,6 +831,35 @@ def _insert_decision_row(
                 next_action_hint,
                 str(manifest_path),
                 created_at,
+            ),
+        )
+        insert_runtime_event_in_connection(
+            connection,
+            database_path=database_path,
+            request=RuntimeEventAppendRequest(
+                event_type="deployable_green_decided",
+                entity_type="run",
+                entity_id=run_details.run.id,
+                project_key=run_details.run.project_key,
+                flow_id=run_details.run.flow_id,
+                run_id=run_details.run.id,
+                severity=(
+                    "info"
+                    if decision_status == "deployable_green"
+                    else ("error" if decision_status == "blocked" else "warning")
+                ),
+                summary=f"Deployable-green decided for run {run_details.run.id}: {decision_status}",
+                payload_redacted={
+                    "decision_id": decision_id,
+                    "decision_status": decision_status,
+                    "rule": decision_rule,
+                    "reviewer_verdict": reviewer_verdict_source.verdict,
+                    "host_checks_verdict": host_checks_verdict_source.verdict,
+                    "next_action_hint": next_action_hint,
+                    "manifest_path": manifest_path,
+                },
+                source_module="deployable_green",
+                created_at=created_at,
             ),
         )
         connection.commit()

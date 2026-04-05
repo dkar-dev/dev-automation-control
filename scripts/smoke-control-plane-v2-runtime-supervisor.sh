@@ -188,7 +188,9 @@ foreground_console_log = tmp_root / "foreground-runtime.log"
 
 scripts = {
     "init": control_dir / "scripts" / "init-sqlite-v1",
+    "list_events": control_dir / "scripts" / "list-runtime-events",
     "register": control_dir / "scripts" / "register-project-package",
+    "show_event": control_dir / "scripts" / "show-runtime-event",
     "start": control_dir / "scripts" / "start-control-plane-runtime",
     "stop": control_dir / "scripts" / "stop-control-plane-runtime",
     "restart": control_dir / "scripts" / "restart-control-plane-runtime",
@@ -319,6 +321,33 @@ assert runtime_status["pid"], start_payload
 assert runtime_status["sqlite_db"] == str(db_path), start_payload
 assert runtime_status["worker_mode"] == "executor+reviewer", start_payload
 
+start_events = run_json(
+    scripts["list_events"],
+    "--sqlite-db",
+    db_path,
+    "--event-type",
+    "runtime_supervisor_started",
+    "--limit",
+    "10",
+    "--json",
+)
+matching_start_events = [
+    item
+    for item in start_events["runtime_events"]
+    if item["entity_id"] == str(runtime_root)
+]
+assert matching_start_events, start_events
+start_event_id = matching_start_events[0]["event_id"]
+start_event_detail = run_json(
+    scripts["show_event"],
+    "--sqlite-db",
+    db_path,
+    start_event_id,
+    "--json",
+)
+assert start_event_detail["runtime_event"]["event_type"] == "runtime_supervisor_started", start_event_detail
+assert start_event_detail["runtime_event"]["payload_redacted"]["runtime_root"] == str(runtime_root), start_event_detail
+
 status_payload = run_json(scripts["status"], "--runtime-root", runtime_root, "--json")
 assert status_payload["runtime_status"]["supervisor_running"] is True, status_payload
 assert status_payload["runtime_status"]["lock_path"].endswith("supervisor.lock"), status_payload
@@ -386,6 +415,31 @@ wait_for_health(restart_payload["restart"]["after"]["api_base_url"])
 stop_payload = run_json(scripts["stop"], "--runtime-root", runtime_root, "--json")
 assert stop_payload["runtime_status"]["supervisor_running"] is False, stop_payload
 wait_for_health_to_fail(base_url)
+
+stop_events = run_json(
+    scripts["list_events"],
+    "--sqlite-db",
+    db_path,
+    "--event-type",
+    "runtime_supervisor_stopped",
+    "--limit",
+    "10",
+    "--json",
+)
+matching_stop_events = [
+    item
+    for item in stop_events["runtime_events"]
+    if item["entity_id"] == str(runtime_root)
+]
+assert matching_stop_events, stop_events
+stop_event_detail = run_json(
+    scripts["show_event"],
+    "--sqlite-db",
+    db_path,
+    matching_stop_events[0]["event_id"],
+    "--json",
+)
+assert stop_event_detail["runtime_event"]["event_type"] == "runtime_supervisor_stopped", stop_event_detail
 
 stopped_status = run_json(scripts["status"], "--runtime-root", runtime_root, "--json")
 assert stopped_status["runtime_status"]["supervisor_running"] is False, stopped_status

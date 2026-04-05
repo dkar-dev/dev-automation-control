@@ -17,6 +17,7 @@ from urllib import request as urllib_request
 from .id_generation import generate_opaque_id
 from .project_package import load_project_package
 from .project_package_validator import ProjectPackageValidationFailed, RUNTIME_FILE
+from .runtime_event_journal import RuntimeEventAppendRequest, insert_runtime_event_in_connection
 from .runtime_secrets import ResolvedRuntimeValueBundle, RuntimeValueRedactor, RuntimeValueResolutionError, resolve_runtime_value_bundle
 from .run_persistence import RunDetails, RunPersistenceError, _connect_run_db, _ensure_required_tables, _resolve_database_path, get_run
 from .step_run_persistence import StepRunDetails, StepRunPersistenceError, get_step_run
@@ -391,6 +392,8 @@ def run_host_checks(
         summary=summary,
         manifest_path=manifest_path,
         created_at=created_at,
+        selected_check_ids=[definition.check_id for definition in definitions],
+        redactor=runtime_redactor,
     )
     artifacts = _record_host_check_artifacts(
         resolved_db_path,
@@ -1590,6 +1593,8 @@ def _insert_host_check_run_row(
     summary: HostCheckSummary,
     manifest_path: Path,
     created_at: str,
+    selected_check_ids: Sequence[str],
+    redactor: RuntimeValueRedactor | None,
 ) -> None:
     connection = _connect_run_db(database_path)
     try:
@@ -1637,6 +1642,33 @@ def _insert_host_check_run_row(
                 str(manifest_path),
                 created_at,
             ),
+        )
+        insert_runtime_event_in_connection(
+            connection,
+            database_path=database_path,
+            request=RuntimeEventAppendRequest(
+                event_type="host_checks_completed",
+                entity_type="run",
+                entity_id=run_details.run.id,
+                project_key=run_details.run.project_key,
+                flow_id=run_details.run.flow_id,
+                run_id=run_details.run.id,
+                step_run_id=step_run_id,
+                severity=(
+                    "info" if verdict == "green" else ("error" if verdict == "blocked" else "warning")
+                ),
+                summary=f"Host checks completed for run {run_details.run.id}: {verdict}",
+                payload_redacted={
+                    "check_run_id": check_run_id,
+                    "verdict": verdict,
+                    "selected_check_ids": list(selected_check_ids),
+                    "summary": summary.to_dict(),
+                    "manifest_path": manifest_path,
+                },
+                source_module="host_checks",
+                created_at=created_at,
+            ),
+            redactor=redactor,
         )
         connection.commit()
     except sqlite3.Error as exc:

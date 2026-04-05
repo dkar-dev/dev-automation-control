@@ -17,6 +17,7 @@ from .id_generation import generate_opaque_id
 from .project_package import load_project_package
 from .project_package_validator import ProjectPackageValidationFailed
 from .project_package_validator import INSTRUCTIONS_FILE, RUNTIME_FILE
+from .runtime_event_journal import RuntimeEventAppendRequest, insert_runtime_event_in_connection
 from .run_persistence import (
     PRIORITY_CLASSES,
     RootRunCreateRequest,
@@ -276,6 +277,8 @@ def submit_bounded_task(
         artifacts = _record_submission_artifacts(
             resolved_db_path,
             run_details,
+            request=request,
+            submitted_at=submitted_at,
             artifact_paths=(
                 (ARTIFACT_KIND_TASK_SUBMISSION_MANIFEST, submission_manifest_path),
                 (ARTIFACT_KIND_TASK_RUNTIME_CONTEXT_MANIFEST, runtime_context_path),
@@ -599,6 +602,8 @@ def _record_submission_artifacts(
     database_path: Path,
     run_details: RunDetails,
     *,
+    request: BoundedTaskSubmissionRequest,
+    submitted_at: str,
     artifact_paths: Sequence[tuple[str, Path]],
 ) -> tuple[SubmittedTaskArtifact, ...]:
     connection = _connect_run_db(database_path)
@@ -652,6 +657,40 @@ def _record_submission_artifacts(
                     created_at=created_at,
                 )
             )
+        insert_runtime_event_in_connection(
+            connection,
+            database_path=database_path,
+            request=RuntimeEventAppendRequest(
+                event_type="task_submitted",
+                entity_type="run",
+                entity_id=run_details.run.id,
+                project_key=run_details.run.project_key,
+                flow_id=run_details.run.flow_id,
+                run_id=run_details.run.id,
+                severity="info",
+                summary=(
+                    f"Task submitted for {run_details.run.project_key} "
+                    f"({run_details.run.workflow_id}/{run_details.run.milestone})"
+                ),
+                payload_redacted={
+                    "project_profile": run_details.run.project_profile,
+                    "workflow_id": run_details.run.workflow_id,
+                    "milestone": run_details.run.milestone,
+                    "priority_class": (
+                        run_details.run.queue_item.priority_class
+                        if run_details.run.queue_item is not None
+                        else request.priority_class
+                    ),
+                    "source": request.source,
+                    "thread_label": request.thread_label,
+                    "constraint_count": len(request.constraints),
+                    "expected_output_count": len(request.expected_output),
+                    "artifact_kinds": [artifact_kind for artifact_kind, _ in artifact_paths],
+                },
+                source_module="task_intake",
+                created_at=submitted_at,
+            ),
+        )
         connection.commit()
         return tuple(artifacts)
     except (sqlite3.Error, OSError) as exc:

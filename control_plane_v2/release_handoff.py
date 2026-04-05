@@ -19,6 +19,7 @@ from .deployable_green import (
 )
 from .dispatch_adapter import ARTIFACT_KIND_DISPATCH_RESULT_MANIFEST
 from .id_generation import generate_opaque_id
+from .runtime_event_journal import RuntimeEventAppendRequest, insert_runtime_event_in_connection
 from .reviewer_result_ingestion import ReviewerResultIngestionError, inspect_reviewer_result
 from .run_persistence import RunDetails, RunPersistenceError, _connect_run_db, _ensure_required_tables, _resolve_database_path, get_run
 
@@ -1059,6 +1060,33 @@ def _insert_release_handoff_row(
                 str(summary_path),
                 str(artifact_index_path),
                 created_at,
+            ),
+        )
+        insert_runtime_event_in_connection(
+            connection,
+            database_path=database_path,
+            request=RuntimeEventAppendRequest(
+                event_type="release_handoff_created",
+                entity_type="run",
+                entity_id=run_details.run.id,
+                project_key=run_details.run.project_key,
+                flow_id=run_details.run.flow_id,
+                run_id=run_details.run.id,
+                severity="info",
+                summary=f"Release handoff created for run {run_details.run.id}",
+                payload_redacted={
+                    "bundle_id": bundle_id,
+                    "decision_status": decision_status,
+                    "commit_sha": commit_source.commit_sha,
+                    "decision_id": decision_source.decision_id,
+                    "reviewer_verdict": reviewer_source.verdict,
+                    "host_checks_verdict": host_checks_source.verdict,
+                    "manifest_path": manifest_path,
+                    "summary_path": summary_path,
+                    "artifact_index_path": artifact_index_path,
+                },
+                source_module="release_handoff",
+                created_at=created_at,
             ),
         )
         connection.commit()

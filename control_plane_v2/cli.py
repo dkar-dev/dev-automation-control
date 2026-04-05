@@ -95,6 +95,7 @@ from .http_api import (
     serve_control_plane_api,
 )
 from .runtime_secrets import RuntimeValueResolutionError, resolve_runtime_value_bundle_for_selector
+from .runtime_event_journal import RuntimeEventJournalError, get_runtime_event, list_runtime_events
 from .bounded_contracts import (
     CONTRACT_TAXONOMY,
     BoundedContractError,
@@ -1793,6 +1794,100 @@ def main_list_submitted_tasks(argv: list[str] | None = None) -> int:
     return 0
 
 
+def main_list_runtime_events(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(description="List append-only Control Plane v2 runtime events.")
+    parser.add_argument("--sqlite-db", required=True, help="SQLite database path bootstrapped with init-sqlite-v1")
+    parser.add_argument("--limit", type=int, default=100, help="Maximum number of events to return")
+    parser.add_argument("--project-key", help="Optional project_key filter")
+    parser.add_argument("--flow-id", help="Optional flow_id filter")
+    parser.add_argument("--run-id", help="Optional run_id filter")
+    parser.add_argument("--event-type", help="Optional event_type filter")
+    parser.add_argument("--created-after", help="Optional lower-bound created_at ISO-8601 timestamp")
+    parser.add_argument("--json", action="store_true", help="Print machine-readable JSON output")
+    args = parser.parse_args(argv)
+
+    try:
+        result = list_runtime_events(
+            args.sqlite_db,
+            limit=args.limit,
+            project_key=args.project_key,
+            flow_id=args.flow_id,
+            run_id=args.run_id,
+            event_type=args.event_type,
+            created_after=args.created_after,
+        )
+    except RuntimeEventJournalError as exc:
+        payload = {"ok": False, "stage": "runtime_event_journal", "error": exc.to_dict()}
+        if args.json:
+            print(json.dumps(payload, ensure_ascii=False, indent=2), file=sys.stderr)
+        else:
+            print(f"Runtime event listing failed: {exc.message}", file=sys.stderr)
+            if exc.details:
+                print(f"Details: {exc.details}", file=sys.stderr)
+        return 1
+
+    payload = {
+        "ok": True,
+        "sqlite_db": str(Path(args.sqlite_db).expanduser().resolve()),
+        "runtime_events": [item.to_dict() for item in result],
+    }
+    if args.json:
+        print(json.dumps(payload, ensure_ascii=False, indent=2))
+    else:
+        print(f"Runtime events: {len(result)}")
+        for item in result:
+            scope = item.run_id or item.flow_id or item.project_key or item.entity_id
+            print(
+                f"- {item.created_at} | {item.event_type} | {item.severity} | "
+                f"entity={item.entity_type}:{item.entity_id} | scope={scope}"
+            )
+            print(f"  {item.summary}")
+    return 0
+
+
+def main_show_runtime_event(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(description="Show one append-only Control Plane v2 runtime event.")
+    parser.add_argument("--sqlite-db", required=True, help="SQLite database path bootstrapped with init-sqlite-v1")
+    parser.add_argument("event_id", help="Runtime event identifier")
+    parser.add_argument("--json", action="store_true", help="Print machine-readable JSON output")
+    args = parser.parse_args(argv)
+
+    try:
+        result = get_runtime_event(args.sqlite_db, args.event_id)
+    except RuntimeEventJournalError as exc:
+        payload = {"ok": False, "stage": "runtime_event_journal", "error": exc.to_dict()}
+        if args.json:
+            print(json.dumps(payload, ensure_ascii=False, indent=2), file=sys.stderr)
+        else:
+            print(f"Runtime event lookup failed: {exc.message}", file=sys.stderr)
+            if exc.details:
+                print(f"Details: {exc.details}", file=sys.stderr)
+        return 1
+
+    payload = {
+        "ok": True,
+        "sqlite_db": str(Path(args.sqlite_db).expanduser().resolve()),
+        "runtime_event": result.to_dict(),
+    }
+    if args.json:
+        print(json.dumps(payload, ensure_ascii=False, indent=2))
+    else:
+        print(f"Event: {result.event_id}")
+        print(f"Created at: {result.created_at}")
+        print(f"Type: {result.event_type}")
+        print(f"Severity: {result.severity}")
+        print(f"Entity: {result.entity_type}:{result.entity_id}")
+        print(f"Project: {result.project_key or 'none'}")
+        print(f"Flow: {result.flow_id or 'none'}")
+        print(f"Run: {result.run_id or 'none'}")
+        print(f"Step run: {result.step_run_id or 'none'}")
+        print(f"Source module: {result.source_module}")
+        print(f"Summary: {result.summary}")
+        print("Payload:")
+        print(json.dumps(result.payload_redacted, ensure_ascii=False, indent=2))
+    return 0
+
+
 def main_run_host_checks(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Run the host-side smoke/deploy checks matrix for one run.")
     parser.add_argument("--sqlite-db", required=True, help="SQLite database path bootstrapped with init-sqlite-v1")
@@ -3180,6 +3275,12 @@ def main() -> int:
     list_submitted_tasks_parser = subparsers.add_parser("list-submitted-tasks")
     list_submitted_tasks_parser.add_argument("args", nargs=argparse.REMAINDER)
 
+    list_runtime_events_parser = subparsers.add_parser("list-runtime-events")
+    list_runtime_events_parser.add_argument("args", nargs=argparse.REMAINDER)
+
+    show_runtime_event_parser = subparsers.add_parser("show-runtime-event")
+    show_runtime_event_parser.add_argument("args", nargs=argparse.REMAINDER)
+
     run_host_checks_parser = subparsers.add_parser("run-host-checks")
     run_host_checks_parser.add_argument("args", nargs=argparse.REMAINDER)
 
@@ -3303,6 +3404,10 @@ def main() -> int:
         return main_show_submitted_task(args.args)
     if args.command == "list-submitted-tasks":
         return main_list_submitted_tasks(args.args)
+    if args.command == "list-runtime-events":
+        return main_list_runtime_events(args.args)
+    if args.command == "show-runtime-event":
+        return main_show_runtime_event(args.args)
     if args.command == "run-host-checks":
         return main_run_host_checks(args.args)
     if args.command == "show-host-check-results":

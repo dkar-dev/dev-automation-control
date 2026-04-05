@@ -13,6 +13,7 @@ from .id_generation import (
     generate_run_id,
     generate_state_transition_id,
 )
+from .runtime_event_journal import RuntimeEventAppendRequest, insert_runtime_event_in_connection
 
 
 PRIORITY_CLASSES = ("system", "interactive", "background")
@@ -348,6 +349,33 @@ def create_root_run(database_path: str | Path, request: RootRunCreateRequest) ->
                     PROVISIONAL_QUEUE_ENQUEUE_TRANSITION_TYPE,
                     json.dumps({"priority_class": request.priority_class}, sort_keys=True),
                     now,
+                ),
+            )
+            insert_runtime_event_in_connection(
+                connection,
+                database_path=resolved_db_path,
+                request=RuntimeEventAppendRequest(
+                    event_type="run_created",
+                    entity_type="run",
+                    entity_id=run_id,
+                    project_key=request.project_key,
+                    flow_id=flow_id,
+                    run_id=run_id,
+                    severity="info",
+                    summary=(
+                        f"Run created for {request.project_key} "
+                        f"({request.workflow_id}/{request.milestone})"
+                    ),
+                    payload_redacted={
+                        "origin_type": PROVISIONAL_ROOT_ORIGIN_TYPE,
+                        "project_profile": request.project_profile,
+                        "workflow_id": request.workflow_id,
+                        "milestone": request.milestone,
+                        "priority_class": request.priority_class,
+                        "artifact_directory": str(artifact_directory) if artifact_directory is not None else None,
+                    },
+                    source_module="run_persistence",
+                    created_at=now,
                 ),
             )
             connection.commit()

@@ -26,6 +26,7 @@ from .http_api import (
     ControlPlaneApiServer,
     create_control_plane_api_config,
 )
+from .runtime_event_journal import RuntimeEventAppendRequest, RuntimeEventJournalError, append_runtime_event
 from .worker_loop import WorkerLoopError, WorkerRuntimeConfig, run_worker_until_idle
 
 
@@ -267,6 +268,7 @@ class ControlPlaneRuntimeSupervisor:
         self._api_thread: threading.Thread | None = None
         self._worker_thread: threading.Thread | None = None
         self._signal_count = 0
+        self._last_degraded_reasons_emitted: tuple[str, ...] = tuple()
         self._state = self._build_initial_state()
 
     def run(self) -> int:
@@ -290,6 +292,18 @@ class ControlPlaneRuntimeSupervisor:
         self._start_worker_thread()
         self._set_supervisor_state("running")
         self._append_event("info", "supervisor_running", pid=os.getpid(), api_base_url=self.config.api_config.base_url)
+        self._append_runtime_journal_event(
+            event_type="runtime_supervisor_started",
+            severity="info",
+            summary=f"Runtime supervisor started for {self.config.paths.runtime_root}",
+            payload_redacted={
+                "runtime_root": self.config.paths.runtime_root,
+                "launch_mode": self.launch_mode,
+                "api_base_url": self.config.api_config.base_url,
+                "worker_mode": self.config.worker_mode,
+                "sqlite_db": self.config.sqlite_db,
+            },
+        )
 
         try:
             while not self._stop_event.is_set():
@@ -555,6 +569,8 @@ class ControlPlaneRuntimeSupervisor:
             self._write_state_locked()
 
     def _synchronize_thread_state(self) -> None:
+        emit_degraded_event = False
+        degraded_payload: dict[str, object] | None = None
         with self._state_lock:
             degraded_reasons = self._compute_degraded_reasons_locked()
             current_state = self._state["supervisor"]["state"]
@@ -563,6 +579,24 @@ class ControlPlaneRuntimeSupervisor:
             self._state["degraded_reasons"] = degraded_reasons
             self._state["updated_at"] = _utc_now()
             self._write_state_locked()
+            normalized_reasons = tuple(str(item) for item in degraded_reasons)
+            if normalized_reasons and normalized_reasons != self._last_degraded_reasons_emitted:
+                emit_degraded_event = True
+                degraded_payload = {
+                    "runtime_root": self.config.paths.runtime_root,
+                    "reasons": list(normalized_reasons),
+                    "api_status": self._state["api"]["status"],
+                    "worker_status": self._state["worker"]["status"],
+                    "last_error": self._state["last_error"],
+                }
+            self._last_degraded_reasons_emitted = normalized_reasons
+        if emit_degraded_event and degraded_payload is not None:
+            self._append_runtime_journal_event(
+                event_type="runtime_supervisor_degraded",
+                severity="warning",
+                summary=f"Runtime supervisor degraded for {self.config.paths.runtime_root}",
+                payload_redacted=degraded_payload,
+            )
 
     def _compute_degraded_reasons_locked(self) -> list[str]:
         reasons: list[str] = []
@@ -610,6 +644,18 @@ class ControlPlaneRuntimeSupervisor:
 
         self._remove_pid_file()
         self._append_event("info", "supervisor_stopped", stopped_at=stopped_at)
+        self._append_runtime_journal_event(
+            event_type="runtime_supervisor_stopped",
+            severity="info",
+            summary=f"Runtime supervisor stopped for {self.config.paths.runtime_root}",
+            payload_redacted={
+                "runtime_root": self.config.paths.runtime_root,
+                "stopped_at": stopped_at,
+                "api_base_url": self.config.api_config.base_url,
+                "worker_mode": self.config.worker_mode,
+                "sqlite_db": self.config.sqlite_db,
+            },
+        )
         self._release_lock()
 
     def _append_event(self, level: str, event: str, **fields: object) -> None:
@@ -626,6 +672,41 @@ class ControlPlaneRuntimeSupervisor:
             _rotate_log_if_needed(self.config.paths.log_paths.event_log_path)
             with self.config.paths.log_paths.event_log_path.open("a", encoding="utf-8") as handle:
                 handle.write(json.dumps(payload, ensure_ascii=False, sort_keys=True) + "\n")
+
+    def _append_runtime_journal_event(
+        self,
+        *,
+        event_type: str,
+        severity: str,
+        summary: str,
+        payload_redacted: Mapping[str, object],
+    ) -> None:
+        try:
+            append_runtime_event(
+                self.config.sqlite_db,
+                RuntimeEventAppendRequest(
+                    event_type=event_type,
+                    entity_type="runtime_supervisor",
+                    entity_id=str(self.config.paths.runtime_root),
+                    project_key=None,
+                    flow_id=None,
+                    run_id=None,
+                    step_run_id=None,
+                    severity=severity,
+                    summary=summary,
+                    payload_redacted=payload_redacted,
+                    source_module="runtime_supervisor",
+                ),
+            )
+        except RuntimeEventJournalError as exc:
+            self._append_event(
+                "error",
+                "runtime_event_journal_append_failed",
+                event_type=event_type,
+                error_code=exc.code,
+                error_message=exc.message,
+                error_details=exc.details,
+            )
 
     def _write_state(self) -> None:
         with self._state_lock:
