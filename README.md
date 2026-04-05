@@ -21,6 +21,7 @@ This repo is the control plane for local orchestration between `n8n`, operator t
 - The v2 scaffold now also includes a bounded host-side checks matrix v1, so reviewer-approved runs can be verified on the host and gated to `green | not_green | blocked` without adding Kubernetes or cluster orchestration.
 - The v2 scaffold now also includes a formal deployable-green decision gate v1, so reviewer outcome plus latest host-side checks can produce one append-only final decision `deployable_green | not_green | blocked` without becoming a deployment controller.
 - The v2 scaffold now also includes an explicit release handoff bundle v1, so a deployable-green run can be exported as one append-only release-ready package for an operator or external deploy system without performing deployment.
+- The v2 scaffold now also includes a bounded single-node runtime supervisor v1, so one Linux machine can keep the localhost API and bounded worker loop alive behind explicit start/stop/status/restart semantics without adding multi-worker or distributed control.
 - Cutover from the legacy bridge transport to the v2 HTTP API is controlled and partial; the backend runner layer remains intentionally legacy.
 - The first executable v2 utilities now live in:
   - `scripts/validate-project-package`
@@ -63,6 +64,11 @@ This repo is the control plane for local orchestration between `n8n`, operator t
   - `scripts/show-cleanup-status`
   - `scripts/run-control-plane-api`
   - `scripts/show-control-plane-config`
+  - `scripts/start-control-plane-runtime`
+  - `scripts/stop-control-plane-runtime`
+  - `scripts/restart-control-plane-runtime`
+  - `scripts/status-control-plane-runtime`
+  - `scripts/run-control-plane-runtime-foreground`
   - `scripts/list-contract-templates`
   - `scripts/generate-bounded-contract`
   - `scripts/show-bounded-contract`
@@ -82,6 +88,7 @@ This repo is the control plane for local orchestration between `n8n`, operator t
   - `scripts/smoke-control-plane-v2-cleanup.sh`
   - `scripts/smoke-control-plane-v2-intake.sh`
   - `scripts/smoke-control-plane-v2-api.sh`
+  - `scripts/smoke-control-plane-v2-runtime-supervisor.sh`
   - `scripts/smoke-control-plane-v2-contracts.sh`
   - `scripts/smoke-control-plane-v2-host-checks.sh`
   - `scripts/smoke-control-plane-v2-deployable-green.sh`
@@ -91,6 +98,7 @@ This repo is the control plane for local orchestration between `n8n`, operator t
   - [`docs/control-plane-v2/bootstrap-and-validation.md`](/home/dkar/workspace/control/docs/control-plane-v2/bootstrap-and-validation.md)
   - [`docs/control-plane-v2/manual-dispatch.md`](/home/dkar/workspace/control/docs/control-plane-v2/manual-dispatch.md)
   - [`docs/control-plane-v2/local-http-api.md`](/home/dkar/workspace/control/docs/control-plane-v2/local-http-api.md)
+  - [`docs/control-plane-v2/runtime-supervisor.md`](/home/dkar/workspace/control/docs/control-plane-v2/runtime-supervisor.md)
   - [`docs/control-plane-v2/bounded-contract-generation.md`](/home/dkar/workspace/control/docs/control-plane-v2/bounded-contract-generation.md)
   - [`docs/control-plane-v2/host-checks.md`](/home/dkar/workspace/control/docs/control-plane-v2/host-checks.md)
   - [`docs/control-plane-v2/deployable-green.md`](/home/dkar/workspace/control/docs/control-plane-v2/deployable-green.md)
@@ -117,6 +125,7 @@ This repo is the control plane for local orchestration between `n8n`, operator t
 
 ## Preferred local orchestration path
 - Submit bounded work with `POST /v1/tasks/submit` or `./scripts/submit-bounded-task`
+- Keep the single-node runtime alive with `./scripts/start-control-plane-runtime`, inspect it with `./scripts/status-control-plane-runtime`, and stop it with `./scripts/stop-control-plane-runtime`
 - Generate bounded contracts with `POST /v1/contracts/generate` or `./scripts/generate-bounded-contract`
 - Progress execution with `POST /v1/worker/tick`, `POST /v1/worker/run-until-idle`, `./scripts/run-worker-tick`, or `./scripts/run-worker-until-idle`
 - Run the host-side deploy gate with `POST /v1/checks/run`, `GET /v1/checks/{run_id}`, `./scripts/run-host-checks`, or `./scripts/show-host-check-results`
@@ -150,6 +159,7 @@ This repo is the control plane for local orchestration between `n8n`, operator t
 - `scripts/pause-run`, `scripts/resume-run`, `scripts/force-stop-run`, and `scripts/rerun-run-step` provide the bounded v1 manual recovery layer over the same run/queue/step primitives.
 - `scripts/list-cleanup-candidates`, `scripts/run-cleanup-once`, and `scripts/show-cleanup-status` provide terminal-only TTL cleanup for runtime artifacts, worktrees, and local runtime branches, while preserving cleanup audit metadata in SQLite.
 - `scripts/run-control-plane-api` exposes those same v2 primitives over localhost-only JSON endpoints at `127.0.0.1:8788` by default; it is separate from the legacy bridge on `127.0.0.1:8787`.
+- `scripts/start-control-plane-runtime` / `scripts/run-control-plane-runtime-foreground` add the bounded v1 service layer for one Linux machine; they supervise the same API and worker primitives without adding distributed runtime behavior.
 - The new n8n workflow package for v2 should call that HTTP API on `8788`, not the legacy bridge on `8787`.
 - n8n should send symbolic instruction selectors only: `instruction_profile`, `instruction_overlays`, and `instructions_repo_path`.
 - The control layer resolves instruction files on the host, records the repo revision and exact files used, then builds the final executor/reviewer prompts locally.

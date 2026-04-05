@@ -124,6 +124,19 @@ from .release_handoff import (
     list_release_handoffs,
     show_release_handoff,
 )
+from .runtime_supervisor import (
+    DEFAULT_RUNTIME_ROOT,
+    DEFAULT_STARTUP_TIMEOUT_SECONDS,
+    DEFAULT_STOP_TIMEOUT_SECONDS,
+    RuntimeSupervisorError,
+    create_control_plane_runtime_config,
+    get_control_plane_runtime_status,
+    load_control_plane_runtime_config,
+    restart_control_plane_runtime,
+    run_control_plane_runtime_foreground,
+    start_control_plane_runtime,
+    stop_control_plane_runtime,
+)
 
 
 CONTROL_DIR = Path(__file__).resolve().parents[1]
@@ -1455,6 +1468,139 @@ def main_show_control_plane_config(argv: list[str] | None = None) -> int:
     return 0
 
 
+def main_run_control_plane_runtime_foreground(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(description="Run the single-node Control Plane v2 runtime supervisor in foreground mode.")
+    _add_control_plane_runtime_arguments(parser, require_sqlite_db=False)
+    parser.add_argument("--runtime-config-json", help=argparse.SUPPRESS)
+    parser.add_argument("--launch-mode", default="foreground", choices=("foreground", "background"), help=argparse.SUPPRESS)
+    args = parser.parse_args(argv)
+
+    try:
+        config = _load_or_build_runtime_supervisor_config_from_args(args, require_sqlite_db=True)
+    except RuntimeSupervisorError as exc:
+        print(f"Runtime supervisor config failed: {exc.message}", file=sys.stderr)
+        if exc.details:
+            print(f"Details: {exc.details}", file=sys.stderr)
+        return 1
+
+    return run_control_plane_runtime_foreground(config, launch_mode=args.launch_mode)
+
+
+def main_start_control_plane_runtime(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(description="Start the single-node Control Plane v2 runtime supervisor in background mode.")
+    _add_control_plane_runtime_arguments(parser, require_sqlite_db=True)
+    parser.add_argument(
+        "--startup-timeout-seconds",
+        type=float,
+        default=DEFAULT_STARTUP_TIMEOUT_SECONDS,
+        help=f"Seconds to wait for the runtime to report running state (default: {DEFAULT_STARTUP_TIMEOUT_SECONDS})",
+    )
+    parser.add_argument("--json", action="store_true", help="Print machine-readable JSON output")
+    args = parser.parse_args(argv)
+
+    try:
+        config = _load_or_build_runtime_supervisor_config_from_args(args, require_sqlite_db=True)
+        status = start_control_plane_runtime(config, startup_timeout_seconds=args.startup_timeout_seconds)
+    except RuntimeSupervisorError as exc:
+        return _emit_runtime_supervisor_error(args.json, exc, action="start")
+
+    return _emit_runtime_supervisor_status(args.json, status, action="start")
+
+
+def main_stop_control_plane_runtime(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(description="Stop the single-node Control Plane v2 runtime supervisor.")
+    _add_control_plane_runtime_arguments(parser, require_sqlite_db=False)
+    parser.add_argument(
+        "--timeout-seconds",
+        type=float,
+        default=DEFAULT_STOP_TIMEOUT_SECONDS,
+        help=f"Seconds to wait for the runtime to stop cleanly (default: {DEFAULT_STOP_TIMEOUT_SECONDS})",
+    )
+    parser.add_argument("--json", action="store_true", help="Print machine-readable JSON output")
+    args = parser.parse_args(argv)
+
+    config = _load_or_build_runtime_supervisor_config_from_args(args, require_sqlite_db=False, optional_if_missing=True)
+    try:
+        status = stop_control_plane_runtime(
+            config=config,
+            runtime_root=args.runtime_root,
+            runtime_state_dir=args.runtime_state_dir,
+            runtime_pid_dir=args.runtime_pid_dir,
+            runtime_log_dir=args.runtime_log_dir,
+            timeout_seconds=args.timeout_seconds,
+        )
+    except RuntimeSupervisorError as exc:
+        return _emit_runtime_supervisor_error(args.json, exc, action="stop")
+
+    return _emit_runtime_supervisor_status(args.json, status, action="stop")
+
+
+def main_restart_control_plane_runtime(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(description="Restart the single-node Control Plane v2 runtime supervisor.")
+    _add_control_plane_runtime_arguments(parser, require_sqlite_db=False)
+    parser.add_argument(
+        "--startup-timeout-seconds",
+        type=float,
+        default=DEFAULT_STARTUP_TIMEOUT_SECONDS,
+        help=f"Seconds to wait for runtime startup after stop (default: {DEFAULT_STARTUP_TIMEOUT_SECONDS})",
+    )
+    parser.add_argument(
+        "--timeout-seconds",
+        type=float,
+        default=DEFAULT_STOP_TIMEOUT_SECONDS,
+        help=f"Seconds to wait for the current runtime to stop cleanly (default: {DEFAULT_STOP_TIMEOUT_SECONDS})",
+    )
+    parser.add_argument("--json", action="store_true", help="Print machine-readable JSON output")
+    args = parser.parse_args(argv)
+
+    try:
+        config = _load_or_build_runtime_supervisor_config_from_args(args, require_sqlite_db=False)
+        result = restart_control_plane_runtime(
+            config=config,
+            runtime_root=args.runtime_root,
+            runtime_state_dir=args.runtime_state_dir,
+            runtime_pid_dir=args.runtime_pid_dir,
+            runtime_log_dir=args.runtime_log_dir,
+            startup_timeout_seconds=args.startup_timeout_seconds,
+            stop_timeout_seconds=args.timeout_seconds,
+        )
+    except RuntimeSupervisorError as exc:
+        return _emit_runtime_supervisor_error(args.json, exc, action="restart")
+
+    payload = {"ok": True, "action": "restart", "restart": result.to_dict()}
+    if args.json:
+        print(json.dumps(payload, ensure_ascii=False, indent=2))
+    else:
+        before_pid = result.before.pid or "none"
+        after_pid = result.after.pid or "none"
+        print(f"Runtime restarted: pid {before_pid} -> {after_pid}")
+        print(f"Supervisor state: {result.after.supervisor_state}")
+        print(f"API base URL: {result.after.api_base_url}")
+        print(f"SQLite DB: {result.after.sqlite_db}")
+    return 0
+
+
+def main_status_control_plane_runtime(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(description="Show the current status of the single-node Control Plane v2 runtime supervisor.")
+    _add_control_plane_runtime_arguments(parser, require_sqlite_db=False)
+    parser.add_argument("--json", action="store_true", help="Print machine-readable JSON output")
+    args = parser.parse_args(argv)
+
+    config = _load_or_build_runtime_supervisor_config_from_args(args, require_sqlite_db=False, optional_if_missing=True)
+    try:
+        status = get_control_plane_runtime_status(
+            config=config,
+            runtime_root=args.runtime_root,
+            runtime_state_dir=args.runtime_state_dir,
+            runtime_pid_dir=args.runtime_pid_dir,
+            runtime_log_dir=args.runtime_log_dir,
+        )
+    except RuntimeSupervisorError as exc:
+        return _emit_runtime_supervisor_error(args.json, exc, action="status")
+
+    return _emit_runtime_supervisor_status(args.json, status, action="status")
+
+
 def main_submit_bounded_task(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Submit one bounded task into Control Plane v2.")
     parser.add_argument("--sqlite-db", required=True, help="SQLite database path bootstrapped with init-sqlite-v1")
@@ -2545,6 +2691,188 @@ def _build_control_plane_api_config_from_args(args: argparse.Namespace):
     )
 
 
+def _add_control_plane_runtime_arguments(parser: argparse.ArgumentParser, *, require_sqlite_db: bool) -> None:
+    parser.add_argument(
+        "--sqlite-db",
+        required=require_sqlite_db,
+        help="SQLite database path for the runtime supervisor",
+    )
+    parser.add_argument(
+        "--host",
+        default=None,
+        help=f"Runtime API bind host (defaults to localhost-only {API_DEFAULT_HOST})",
+    )
+    parser.add_argument(
+        "--port",
+        type=int,
+        default=None,
+        help=f"Runtime API bind port (defaults to {API_DEFAULT_PORT})",
+    )
+    parser.add_argument(
+        "--artifact-root",
+        default=None,
+        help="Runtime artifact root; defaults to <runtime-root>/artifacts",
+    )
+    parser.add_argument(
+        "--workspace-root",
+        default=None,
+        help=f"Workspace root used by runtime defaults; defaults to {CONTROL_DIR.parent}",
+    )
+    parser.add_argument(
+        "--worker-log-root",
+        default=None,
+        help="Worker summary/log root; defaults to <runtime-root>/worker-logs",
+    )
+    parser.add_argument(
+        "--worker-poll-interval-seconds",
+        type=float,
+        default=None,
+        help="Idle/failure polling interval between worker cycles",
+    )
+    parser.add_argument(
+        "--max-ticks-per-cycle",
+        type=int,
+        default=None,
+        help="Maximum worker ticks to execute in one bounded cycle",
+    )
+    parser.add_argument(
+        "--max-claims-per-cycle",
+        type=int,
+        default=None,
+        help="Maximum claimed runs to process in one bounded cycle",
+    )
+    parser.add_argument(
+        "--max-flows-per-cycle",
+        type=int,
+        default=None,
+        help="Maximum distinct flows to process in one bounded cycle",
+    )
+    parser.add_argument(
+        "--max-wall-clock-seconds-per-cycle",
+        type=float,
+        default=None,
+        help="Maximum wall-clock time for one bounded worker cycle",
+    )
+    parser.add_argument(
+        "--runtime-root",
+        default=None,
+        help=f"Runtime root directory (default: {DEFAULT_RUNTIME_ROOT})",
+    )
+    parser.add_argument("--runtime-state-dir", default=None, help="Override runtime state directory")
+    parser.add_argument("--runtime-pid-dir", default=None, help="Override runtime pid directory")
+    parser.add_argument("--runtime-log-dir", default=None, help="Override runtime log directory")
+    parser.add_argument("--context-json", help="Optional JSON file with legacy runtime context fields")
+    parser.add_argument("--project-repo-path", help="Override project_repo_path")
+    parser.add_argument("--executor-worktree-path", help="Override executor_worktree_path")
+    parser.add_argument("--reviewer-worktree-path", help="Override reviewer_worktree_path")
+    parser.add_argument("--instructions-repo-path", help="Override instructions_repo_path")
+    parser.add_argument("--branch-base", help="Override branch_base")
+    parser.add_argument("--instruction-profile", help="Override instruction_profile")
+    parser.add_argument("--instruction-overlay", action="append", dest="instruction_overlays", help="Append one instruction overlay")
+    parser.add_argument("--task-text", help="Override task_text")
+    parser.add_argument("--mode", choices=("executor-only", "executor+reviewer"), help="Override legacy runtime mode")
+    parser.add_argument("--source", help="Override legacy runtime source")
+    parser.add_argument("--thread-label", help="Override legacy runtime thread_label")
+    parser.add_argument("--constraint", action="append", dest="constraints", help="Append one task constraint")
+    parser.add_argument("--expected-output", action="append", dest="expected_output", help="Append one expected-output line")
+    parser.add_argument("--legacy-control-dir", help="Optional control repo root used to source legacy scripts/templates")
+    parser.add_argument("--executor-runner", help="Override executor backend runner path")
+    parser.add_argument("--reviewer-runner", help="Override reviewer backend runner path")
+    parser.add_argument("--claim-now", help="Optional ISO-8601 timestamp used for scheduler claim evaluation")
+
+
+def _build_runtime_supervisor_config_from_args(args: argparse.Namespace) -> ControlPlaneRuntimeConfig:
+    return create_control_plane_runtime_config(
+        sqlite_db=args.sqlite_db,
+        api_host=args.host,
+        api_port=args.port,
+        artifact_root=args.artifact_root,
+        workspace_root=args.workspace_root,
+        worker_log_root=args.worker_log_root,
+        worker_poll_interval_seconds=args.worker_poll_interval_seconds,
+        max_ticks_per_cycle=args.max_ticks_per_cycle,
+        max_claims_per_cycle=args.max_claims_per_cycle,
+        max_flows_per_cycle=args.max_flows_per_cycle,
+        max_wall_clock_seconds_per_cycle=args.max_wall_clock_seconds_per_cycle,
+        runtime_root=args.runtime_root,
+        runtime_state_dir=args.runtime_state_dir,
+        runtime_pid_dir=args.runtime_pid_dir,
+        runtime_log_dir=args.runtime_log_dir,
+        worker_runtime_config=_build_worker_runtime_config_from_args(args),
+    )
+
+
+def _load_or_build_runtime_supervisor_config_from_args(
+    args: argparse.Namespace,
+    *,
+    require_sqlite_db: bool,
+    optional_if_missing: bool = False,
+) -> ControlPlaneRuntimeConfig | None:
+    config_json_path = getattr(args, "runtime_config_json", None)
+    if config_json_path:
+        return load_control_plane_runtime_config(config_json_path=config_json_path)
+
+    if getattr(args, "sqlite_db", None):
+        return _build_runtime_supervisor_config_from_args(args)
+
+    try:
+        return load_control_plane_runtime_config(
+            runtime_root=args.runtime_root,
+            runtime_state_dir=args.runtime_state_dir,
+            runtime_pid_dir=args.runtime_pid_dir,
+            runtime_log_dir=args.runtime_log_dir,
+        )
+    except RuntimeSupervisorError:
+        if optional_if_missing and not require_sqlite_db:
+            return None
+        raise
+
+
+def _emit_runtime_supervisor_error(json_output: bool, exc: RuntimeSupervisorError, *, action: str) -> int:
+    payload = {"ok": False, "action": action, "stage": "runtime_supervisor", "error": exc.to_dict()}
+    if json_output:
+        print(json.dumps(payload, ensure_ascii=False, indent=2), file=sys.stderr)
+    else:
+        print(f"Runtime supervisor {action} failed: {exc.message}", file=sys.stderr)
+        if exc.details:
+            print(f"Details: {exc.details}", file=sys.stderr)
+    return 1
+
+
+def _emit_runtime_supervisor_status(json_output: bool, status: object, *, action: str) -> int:
+    status_payload = status.to_dict()
+    payload = {"ok": True, "action": action, "runtime_status": status_payload}
+    if json_output:
+        print(json.dumps(payload, ensure_ascii=False, indent=2))
+    else:
+        print(f"Supervisor running: {'yes' if status_payload['supervisor_running'] else 'no'}")
+        print(f"Supervisor state: {status_payload['supervisor_state']}")
+        print(f"PID: {status_payload['pid'] or 'none'}")
+        print(f"Started at: {status_payload['started_at'] or 'none'}")
+        print(f"SQLite DB: {status_payload['sqlite_db'] or 'none'}")
+        print(f"API base URL: {status_payload['api_base_url'] or 'none'}")
+        print(f"API status: {status_payload['api_status'] or 'none'}")
+        print(f"Worker mode: {status_payload['worker_mode'] or 'none'}")
+        print(f"Worker status: {status_payload['worker_status'] or 'none'}")
+        last_cycle = status_payload["last_worker_cycle"]
+        if isinstance(last_cycle, dict):
+            print(
+                "Last worker cycle: "
+                f"{last_cycle.get('cycle_state')} | ended_reason={last_cycle.get('ended_reason')} "
+                f"| claims={last_cycle.get('claims_processed')} | ticks={last_cycle.get('ticks_executed')}"
+            )
+        else:
+            print("Last worker cycle: none")
+        print(
+            "Logs: "
+            f"events={status_payload['log_paths']['event_log_path']} "
+            f"console={status_payload['log_paths']['console_log_path']} "
+            f"worker={status_payload['log_paths']['worker_log_root']}"
+        )
+        print(f"Lock path: {status_payload['lock_path']}")
+    return 0
+
+
 def _merge_submission_cli_overrides(base_payload: dict[str, object], args: argparse.Namespace) -> dict[str, object]:
     payload = dict(base_payload)
     for key in (
@@ -2707,6 +3035,21 @@ def main() -> int:
     show_api_config_parser = subparsers.add_parser("show-control-plane-config")
     show_api_config_parser.add_argument("args", nargs=argparse.REMAINDER)
 
+    run_runtime_foreground_parser = subparsers.add_parser("run-control-plane-runtime-foreground")
+    run_runtime_foreground_parser.add_argument("args", nargs=argparse.REMAINDER)
+
+    start_runtime_parser = subparsers.add_parser("start-control-plane-runtime")
+    start_runtime_parser.add_argument("args", nargs=argparse.REMAINDER)
+
+    stop_runtime_parser = subparsers.add_parser("stop-control-plane-runtime")
+    stop_runtime_parser.add_argument("args", nargs=argparse.REMAINDER)
+
+    restart_runtime_parser = subparsers.add_parser("restart-control-plane-runtime")
+    restart_runtime_parser.add_argument("args", nargs=argparse.REMAINDER)
+
+    status_runtime_parser = subparsers.add_parser("status-control-plane-runtime")
+    status_runtime_parser.add_argument("args", nargs=argparse.REMAINDER)
+
     submit_task_parser = subparsers.add_parser("submit-bounded-task")
     submit_task_parser.add_argument("args", nargs=argparse.REMAINDER)
 
@@ -2819,6 +3162,16 @@ def main() -> int:
         return main_run_control_plane_api(args.args)
     if args.command == "show-control-plane-config":
         return main_show_control_plane_config(args.args)
+    if args.command == "run-control-plane-runtime-foreground":
+        return main_run_control_plane_runtime_foreground(args.args)
+    if args.command == "start-control-plane-runtime":
+        return main_start_control_plane_runtime(args.args)
+    if args.command == "stop-control-plane-runtime":
+        return main_stop_control_plane_runtime(args.args)
+    if args.command == "restart-control-plane-runtime":
+        return main_restart_control_plane_runtime(args.args)
+    if args.command == "status-control-plane-runtime":
+        return main_status_control_plane_runtime(args.args)
     if args.command == "submit-bounded-task":
         return main_submit_bounded_task(args.args)
     if args.command == "show-submitted-task":

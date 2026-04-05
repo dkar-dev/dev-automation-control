@@ -57,6 +57,8 @@ CLI/env config sources:
 - `--workspace-root` or `CONTROL_PLANE_API_WORKSPACE_ROOT`
 - `--worker-log-root` or `CONTROL_PLANE_API_WORKER_LOG_ROOT`
 
+For a long-lived single-node service on one Linux machine, prefer the runtime supervisor described in [`docs/control-plane-v2/runtime-supervisor.md`](/home/dkar/workspace/control/docs/control-plane-v2/runtime-supervisor.md). `run-control-plane-api` remains the direct foreground API entrypoint.
+
 ## Deprecation and compatibility
 - Use this API on `127.0.0.1:8788` as the primary local control-plane/orchestration surface.
 - Do not point new `n8n` workflows or operator docs at the legacy bridge on `127.0.0.1:8787`.
