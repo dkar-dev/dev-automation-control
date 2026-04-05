@@ -84,7 +84,9 @@ from .http_api import (
     API_DEFAULT_PORT,
     API_ENV_ARTIFACT_ROOT,
     API_ENV_HOST,
+    API_ENV_LOCAL_SECRETS_FILE,
     API_ENV_PORT,
+    API_ENV_RUNTIME_ROOT,
     API_ENV_SQLITE_DB,
     API_ENV_WORKER_LOG_ROOT,
     API_ENV_WORKSPACE_ROOT,
@@ -92,6 +94,7 @@ from .http_api import (
     create_control_plane_api_config,
     serve_control_plane_api,
 )
+from .runtime_secrets import RuntimeValueResolutionError, resolve_runtime_value_bundle_for_selector
 from .bounded_contracts import (
     CONTRACT_TAXONOMY,
     BoundedContractError,
@@ -1464,8 +1467,38 @@ def main_show_control_plane_config(argv: list[str] | None = None) -> int:
         print(f"Default artifact root: {config.default_artifact_root or 'none'}")
         print(f"Default workspace root: {config.default_workspace_root or 'none'}")
         print(f"Default worker log root: {config.default_worker_log_root or 'none'}")
+        print(f"Default runtime root: {config.default_runtime_root or 'none'}")
+        print(f"Default local secrets file: {config.default_local_secrets_file or 'none'}")
         print("Bind policy: localhost-only")
     return 0
+
+
+def main_resolve_runtime_secrets(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(description="Resolve Control Plane v2 runtime secret/config refs without printing raw secret values.")
+    _add_runtime_value_selector_arguments(parser)
+    parser.add_argument("--json", action="store_true", help="Print machine-readable JSON output")
+    args = parser.parse_args(argv)
+
+    try:
+        bundle = _resolve_runtime_value_bundle_from_args(args, require_all_required=False)
+    except RuntimeValueResolutionError as exc:
+        return _emit_runtime_value_error(args.json, exc, action="resolve")
+
+    return _emit_runtime_value_bundle(args.json, bundle, action="resolve")
+
+
+def main_check_runtime_secrets(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(description="Validate that required Control Plane v2 runtime secret/config refs are resolvable.")
+    _add_runtime_value_selector_arguments(parser)
+    parser.add_argument("--json", action="store_true", help="Print machine-readable JSON output")
+    args = parser.parse_args(argv)
+
+    try:
+        bundle = _resolve_runtime_value_bundle_from_args(args, require_all_required=True)
+    except RuntimeValueResolutionError as exc:
+        return _emit_runtime_value_error(args.json, exc, action="check")
+
+    return _emit_runtime_value_bundle(args.json, bundle, action="check")
 
 
 def main_run_control_plane_runtime_foreground(argv: list[str] | None = None) -> int:
@@ -1767,6 +1800,8 @@ def main_run_host_checks(argv: list[str] | None = None) -> int:
     parser.add_argument("--run-id", help="Run identifier to gate")
     parser.add_argument("--step-run-id", help="Optional step_run identifier to attach to the check execution")
     parser.add_argument("--artifact-root", help="Optional artifact root override")
+    parser.add_argument("--runtime-root", help="Optional runtime root used for local secrets-file discovery")
+    parser.add_argument("--local-secrets-file", help="Optional explicit local secrets JSON file")
     parser.add_argument("--runtime-context-json", help="Optional JSON file (or - for stdin) with runtime_context overrides")
     parser.add_argument("--check-id", action="append", dest="check_ids", help="Run only one applicable check id; may be repeated")
     parser.add_argument("--json", action="store_true", help="Print machine-readable JSON output")
@@ -1774,7 +1809,7 @@ def main_run_host_checks(argv: list[str] | None = None) -> int:
 
     try:
         payload = _load_json_argument(args.request_json) if args.request_json else {}
-        for key in ("run_id", "step_run_id", "artifact_root"):
+        for key in ("run_id", "step_run_id", "artifact_root", "runtime_root", "local_secrets_file"):
             value = getattr(args, key)
             if value is not None:
                 payload[key] = value
@@ -2514,6 +2549,8 @@ def _main_dispatch_claimed_run(argv: list[str] | None, *, requested_role: str) -
     parser.add_argument("--context-json", help="Optional JSON file with legacy runtime context fields")
     parser.add_argument("--artifact-root", help="Optional run artifact root (<project>/<flow>/<run>/ will be used)")
     parser.add_argument("--workspace-root", help="Optional workspace root used to derive conventional project/worktree paths")
+    parser.add_argument("--runtime-root", help="Optional runtime root used for local secrets-file discovery")
+    parser.add_argument("--local-secrets-file", help="Optional explicit local secrets JSON file")
     parser.add_argument("--project-repo-path", help="Override project_repo_path")
     parser.add_argument("--executor-worktree-path", help="Override executor_worktree_path")
     parser.add_argument("--reviewer-worktree-path", help="Override reviewer_worktree_path")
@@ -2561,6 +2598,8 @@ def _main_dispatch_claimed_run(argv: list[str] | None, *, requested_role: str) -
             legacy_control_dir=args.legacy_control_dir,
             executor_runner_path=args.executor_runner,
             reviewer_runner_path=args.reviewer_runner,
+            runtime_root=args.runtime_root,
+            local_secrets_file=args.local_secrets_file,
         )
     except (DispatchAdapterError, StepRunPersistenceError, SchedulerPersistenceError) as exc:
         payload = {
@@ -2600,6 +2639,8 @@ def _add_worker_runtime_arguments(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--artifact-root", help="Optional run artifact root (<project>/<flow>/<run>/ will be used)")
     parser.add_argument("--worker-log-root", help="Optional worker summary/log root")
     parser.add_argument("--workspace-root", help="Optional workspace root used to derive conventional project/worktree paths")
+    parser.add_argument("--runtime-root", help="Optional runtime root used for local secrets-file discovery")
+    parser.add_argument("--local-secrets-file", help="Optional explicit local secrets JSON file")
     parser.add_argument("--project-repo-path", help="Override project_repo_path")
     parser.add_argument("--executor-worktree-path", help="Override executor_worktree_path")
     parser.add_argument("--reviewer-worktree-path", help="Override reviewer_worktree_path")
@@ -2626,6 +2667,8 @@ def _build_worker_runtime_config_from_args(args: argparse.Namespace) -> WorkerRu
         artifact_root=Path(args.artifact_root).expanduser().resolve() if getattr(args, "artifact_root", None) else None,
         worker_log_root=Path(args.worker_log_root).expanduser().resolve() if getattr(args, "worker_log_root", None) else None,
         workspace_root=Path(args.workspace_root).expanduser().resolve() if getattr(args, "workspace_root", None) else None,
+        runtime_root=Path(args.runtime_root).expanduser().resolve() if getattr(args, "runtime_root", None) else None,
+        local_secrets_file=Path(args.local_secrets_file).expanduser().resolve() if getattr(args, "local_secrets_file", None) else None,
         project_repo_path=Path(args.project_repo_path).expanduser().resolve() if getattr(args, "project_repo_path", None) else None,
         executor_worktree_path=Path(args.executor_worktree_path).expanduser().resolve() if getattr(args, "executor_worktree_path", None) else None,
         reviewer_worktree_path=Path(args.reviewer_worktree_path).expanduser().resolve() if getattr(args, "reviewer_worktree_path", None) else None,
@@ -2644,6 +2687,65 @@ def _build_worker_runtime_config_from_args(args: argparse.Namespace) -> WorkerRu
         reviewer_runner_path=Path(args.reviewer_runner).expanduser().resolve() if getattr(args, "reviewer_runner", None) else None,
         claim_now=getattr(args, "claim_now", None),
     )
+
+
+def _add_runtime_value_selector_arguments(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument("--sqlite-db", help="SQLite database path used with --run-id or --project-key")
+    parser.add_argument("--run-id", help="Resolve package root from a persisted run")
+    parser.add_argument("--project-key", help="Resolve package root from a registered project")
+    parser.add_argument("--package-root", help="Resolve refs directly from an explicit project package root")
+    parser.add_argument("--selection", choices=("all", "dispatch_env", "host_checks"), default="all", help="Restrict to one consumer-facing subset")
+    parser.add_argument("--runtime-root", help="Optional runtime root used for local secrets-file discovery")
+    parser.add_argument("--local-secrets-file", help="Optional explicit local secrets JSON file")
+
+
+def _resolve_runtime_value_bundle_from_args(
+    args: argparse.Namespace,
+    *,
+    require_all_required: bool,
+):
+    return resolve_runtime_value_bundle_for_selector(
+        database_path=args.sqlite_db,
+        run_id=args.run_id,
+        project_key=args.project_key,
+        package_root=args.package_root,
+        selection=args.selection,
+        runtime_root=args.runtime_root,
+        local_secrets_file=args.local_secrets_file,
+        require_all_required=require_all_required,
+    )
+
+
+def _emit_runtime_value_error(json_output: bool, exc: RuntimeValueResolutionError, *, action: str) -> int:
+    payload = {"ok": False, "action": action, "stage": "runtime_secrets", "error": exc.to_dict()}
+    if json_output:
+        print(json.dumps(payload, ensure_ascii=False, indent=2), file=sys.stderr)
+    else:
+        print(f"Runtime secrets {action} failed: {exc.message}", file=sys.stderr)
+        if exc.details:
+            print(f"Details: {exc.details}", file=sys.stderr)
+    return 1
+
+
+def _emit_runtime_value_bundle(json_output: bool, bundle: object, *, action: str) -> int:
+    payload = {"ok": True, "action": action, "runtime_values": bundle.to_dict()}
+    if json_output:
+        print(json.dumps(payload, ensure_ascii=False, indent=2))
+    else:
+        details = payload["runtime_values"]
+        print(f"Package root: {details['package_root']}")
+        print(f"Selection: {details['selection']}")
+        print(f"Local secrets file: {details['local_secrets_file'] or 'none'}")
+        print(f"All required resolved: {'yes' if details['all_required_resolved'] else 'no'}")
+        if details["missing_required_keys"]:
+            print(f"Missing required keys: {', '.join(details['missing_required_keys'])}")
+        for item in details["values"]:
+            print(
+                f"- {item['key']} | class={item['classification']} | "
+                f"resolved={'yes' if item['resolved'] else 'no'} | "
+                f"source={item['source_ref'] or 'none'} | value={item['value']}"
+            )
+    return 0
 
 
 def _add_control_plane_api_arguments(parser: argparse.ArgumentParser) -> None:
@@ -2678,6 +2780,16 @@ def _add_control_plane_api_arguments(parser: argparse.ArgumentParser) -> None:
         default=None,
         help=f"Optional default worker log root (or set {API_ENV_WORKER_LOG_ROOT})",
     )
+    parser.add_argument(
+        "--runtime-root",
+        default=None,
+        help=f"Optional default runtime root for local secrets-file lookup (or set {API_ENV_RUNTIME_ROOT})",
+    )
+    parser.add_argument(
+        "--local-secrets-file",
+        default=None,
+        help=f"Optional explicit local secrets JSON file (or set {API_ENV_LOCAL_SECRETS_FILE})",
+    )
 
 
 def _build_control_plane_api_config_from_args(args: argparse.Namespace):
@@ -2688,6 +2800,8 @@ def _build_control_plane_api_config_from_args(args: argparse.Namespace):
         default_artifact_root=args.artifact_root,
         default_workspace_root=args.workspace_root,
         default_worker_log_root=args.worker_log_root,
+        default_runtime_root=args.runtime_root,
+        default_local_secrets_file=args.local_secrets_file,
     )
 
 
@@ -2761,6 +2875,7 @@ def _add_control_plane_runtime_arguments(parser: argparse.ArgumentParser, *, req
     parser.add_argument("--runtime-state-dir", default=None, help="Override runtime state directory")
     parser.add_argument("--runtime-pid-dir", default=None, help="Override runtime pid directory")
     parser.add_argument("--runtime-log-dir", default=None, help="Override runtime log directory")
+    parser.add_argument("--local-secrets-file", help="Optional explicit local secrets JSON file used by worker dispatch and host checks")
     parser.add_argument("--context-json", help="Optional JSON file with legacy runtime context fields")
     parser.add_argument("--project-repo-path", help="Override project_repo_path")
     parser.add_argument("--executor-worktree-path", help="Override executor_worktree_path")
@@ -3035,6 +3150,12 @@ def main() -> int:
     show_api_config_parser = subparsers.add_parser("show-control-plane-config")
     show_api_config_parser.add_argument("args", nargs=argparse.REMAINDER)
 
+    resolve_runtime_secrets_parser = subparsers.add_parser("resolve-runtime-secrets")
+    resolve_runtime_secrets_parser.add_argument("args", nargs=argparse.REMAINDER)
+
+    check_runtime_secrets_parser = subparsers.add_parser("check-runtime-secrets")
+    check_runtime_secrets_parser.add_argument("args", nargs=argparse.REMAINDER)
+
     run_runtime_foreground_parser = subparsers.add_parser("run-control-plane-runtime-foreground")
     run_runtime_foreground_parser.add_argument("args", nargs=argparse.REMAINDER)
 
@@ -3162,6 +3283,10 @@ def main() -> int:
         return main_run_control_plane_api(args.args)
     if args.command == "show-control-plane-config":
         return main_show_control_plane_config(args.args)
+    if args.command == "resolve-runtime-secrets":
+        return main_resolve_runtime_secrets(args.args)
+    if args.command == "check-runtime-secrets":
+        return main_check_runtime_secrets(args.args)
     if args.command == "run-control-plane-runtime-foreground":
         return main_run_control_plane_runtime_foreground(args.args)
     if args.command == "start-control-plane-runtime":

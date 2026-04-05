@@ -1,9 +1,9 @@
-# Control Plane v2 Bootstrap, Validation, SQLite Migrations, Registry, Intake, Run, Step, Dispatch, Worker, Manual Control, Cleanup, and Local HTTP API Utilities
+# Control Plane v2 Bootstrap, Validation, SQLite Migrations, Registry, Intake, Run, Step, Dispatch, Worker, Manual Control, Cleanup, Runtime Supervisor, Runtime Secrets, and Local HTTP API Utilities
 
 ## Scope
 - This step adds the first executable infrastructure layer for the v2 scaffold only.
-- It provides strict project package validation, SQLite schema bootstrap/init, SQLite migration management, project registry/import, bounded task intake/run submission, root run creation/inspection, step_run lifecycle utilities, reviewer outcome/follow-up persistence, provisional scheduler claim/release primitives, a bounded manual dispatch adapter for claimed runs, a bounded single-worker loop v1, a bounded manual control/recovery layer v1, a bounded runtime cleanup manager v1, a bounded host-side checks matrix v1, a formal deployable-green decision gate v1, an explicit release handoff bundle export v1, and a thin localhost-only HTTP API v1 over those same primitives.
-- It still does not implement a daemon/service runtime, multi-worker protocol, or auto-continue policy engine.
+- It provides strict project package validation, SQLite schema bootstrap/init, SQLite migration management, project registry/import, bounded task intake/run submission, root run creation/inspection, step_run lifecycle utilities, reviewer outcome/follow-up persistence, provisional scheduler claim/release primitives, a bounded manual dispatch adapter for claimed runs, a bounded single-worker loop v1, a bounded manual control/recovery layer v1, a bounded runtime cleanup manager v1, a bounded host-side checks matrix v1, a formal deployable-green decision gate v1, an explicit release handoff bundle export v1, a bounded single-node runtime supervisor v1, a bounded runtime secrets/config resolution layer v1, and a thin localhost-only HTTP API v1 over those same primitives.
+- It still does not implement multi-worker protocol, distributed secret management, or auto-continue policy engine.
 
 ## Project package validation
 

@@ -37,7 +37,9 @@ cd /home/dkar/workspace/control
   --sqlite-db /tmp/control-plane-v2.sqlite \
   --artifact-root /home/dkar/workspace/control-artifacts \
   --workspace-root /home/dkar/workspace \
-  --worker-log-root /home/dkar/workspace/control-worker-logs
+  --worker-log-root /home/dkar/workspace/control-worker-logs \
+  --runtime-root /home/dkar/workspace/runtime/control-plane-v2 \
+  --local-secrets-file /home/dkar/workspace/runtime/control-plane-v2/secrets/runtime-secrets.json
 ```
 
 Inspect the effective config:
@@ -56,6 +58,8 @@ CLI/env config sources:
 - `--artifact-root` or `CONTROL_PLANE_API_ARTIFACT_ROOT`
 - `--workspace-root` or `CONTROL_PLANE_API_WORKSPACE_ROOT`
 - `--worker-log-root` or `CONTROL_PLANE_API_WORKER_LOG_ROOT`
+- `--runtime-root` or `CONTROL_PLANE_API_RUNTIME_ROOT`
+- `--local-secrets-file` or `CONTROL_PLANE_API_LOCAL_SECRETS_FILE`
 
 For a long-lived single-node service on one Linux machine, prefer the runtime supervisor described in [`docs/control-plane-v2/runtime-supervisor.md`](/home/dkar/workspace/control/docs/control-plane-v2/runtime-supervisor.md). `run-control-plane-api` remains the direct foreground API entrypoint.
 
@@ -105,6 +109,19 @@ Notes:
 
 `GET /v1/health`
 - Liveness plus basic local config summary.
+
+`GET /v1/runtime/secrets/status`
+- Show redacted runtime secret/config resolution status for one `project_key`, `run_id`, or `package_root`.
+- Query params:
+  - `project_key` or `run_id` or `package_root`
+  - `selection` = `all|dispatch_env|host_checks`
+  - optional `runtime_root`
+  - optional `local_secrets_file`
+
+`POST /v1/runtime/secrets/check`
+- Validate that required runtime secret/config refs can be resolved.
+- Accepts the same selector fields as the status endpoint in the JSON body.
+- Never returns raw secret values.
 
 `POST /v1/tasks/submit`
 - Submit one bounded task through the intake layer.
@@ -234,6 +251,23 @@ Run one worker tick:
 curl -s http://127.0.0.1:8788/v1/worker/tick \
   -H 'Content-Type: application/json' \
   -d '{}'
+```
+
+Inspect redacted runtime secret/config status:
+
+```bash
+curl -s "http://127.0.0.1:8788/v1/runtime/secrets/status?project_key=sample-project&selection=all"
+```
+
+Validate required dispatch refs:
+
+```bash
+curl -s http://127.0.0.1:8788/v1/runtime/secrets/check \
+  -H 'Content-Type: application/json' \
+  -d '{
+    "project_key": "sample-project",
+    "selection": "dispatch_env"
+  }'
 ```
 
 Generate one bounded contract:

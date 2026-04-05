@@ -17,6 +17,7 @@ from urllib import request as urllib_request
 from .id_generation import generate_opaque_id
 from .project_package import load_project_package
 from .project_package_validator import ProjectPackageValidationFailed, RUNTIME_FILE
+from .runtime_secrets import ResolvedRuntimeValueBundle, RuntimeValueRedactor, RuntimeValueResolutionError, resolve_runtime_value_bundle
 from .run_persistence import RunDetails, RunPersistenceError, _connect_run_db, _ensure_required_tables, _resolve_database_path, get_run
 from .step_run_persistence import StepRunDetails, StepRunPersistenceError, get_step_run
 from .task_intake import ARTIFACT_KIND_TASK_RUNTIME_CONTEXT_MANIFEST
@@ -36,6 +37,7 @@ HOST_CHECKS_CONFIG_INVALID = "HOST_CHECKS_CONFIG_INVALID"
 HOST_CHECKS_NOT_FOUND = "HOST_CHECKS_NOT_FOUND"
 HOST_CHECKS_REQUEST_INVALID = "HOST_CHECKS_REQUEST_INVALID"
 HOST_CHECKS_RUN_SCOPE_INVALID = "HOST_CHECKS_RUN_SCOPE_INVALID"
+HOST_CHECKS_RUNTIME_VALUE_RESOLUTION_FAILED = "HOST_CHECKS_RUNTIME_VALUE_RESOLUTION_FAILED"
 HOST_CHECKS_STORAGE_ERROR = "HOST_CHECKS_STORAGE_ERROR"
 
 _PLACEHOLDER_RE = re.compile(r"\{\{\s*(?P<key>[a-zA-Z0-9_]+)\s*\}\}")
@@ -52,6 +54,7 @@ class HostCheckDefinition:
     allowed_project_profiles: tuple[str, ...]
     command: str | tuple[str, ...] | None
     url: str | None
+    headers: dict[str, str] | None
     path: str | None
     process_selector: str | None
     success: dict[str, object]
@@ -72,6 +75,7 @@ class HostCheckDefinition:
             "allowed_project_profiles": list(self.allowed_project_profiles),
             "command": command,
             "url": self.url,
+            "headers": dict(self.headers) if self.headers is not None else None,
             "path": self.path,
             "process_selector": self.process_selector,
             "success": self.success,
@@ -312,7 +316,23 @@ def run_host_checks(
             + "; ".join(f"{error.code}:{error.message}" for error in exc.errors)
         )
 
-    check_results = tuple(_execute_check(definition, runtime_context) for definition in definitions)
+    runtime_value_bundle = _resolve_host_check_runtime_value_bundle(
+        database_path=resolved_db_path,
+        project_package_root=run_details.run.package_root,
+        runtime_root=request["runtime_root"],
+        local_secrets_file=request["local_secrets_file"],
+    )
+    runtime_redactor = runtime_value_bundle.redactor()
+    runtime_context_for_execution = dict(runtime_context)
+    runtime_context_for_execution.update(runtime_value_bundle.host_check_context())
+
+    check_results = tuple(
+        _sanitize_host_check_result(
+            _execute_check(definition, runtime_context_for_execution),
+            redactor=runtime_redactor,
+        )
+        for definition in definitions
+    )
     summary = _summarize_check_results(check_results)
     verdict = _determine_verdict(config_issues, check_results)
     manifest_path = _resolve_manifest_path(
@@ -344,6 +364,7 @@ def run_host_checks(
             "selected_check_ids": [definition.check_id for definition in definitions],
             "config_issues": list(config_issues),
         },
+        "runtime_values": runtime_value_bundle.to_dict(),
         "gate": {
             "verdict": verdict,
             "summary": summary.to_dict(),
@@ -356,7 +377,7 @@ def run_host_checks(
                 "v1 keeps reviewer approval separate. Treat deployable green as reviewer-approved path plus a green host-check result."
             ),
         },
-        "runtime_context": runtime_context,
+        "runtime_context": runtime_redactor.sanitize_object(runtime_context_for_execution),
         "checks": [result.to_dict() for result in check_results],
     }
 
@@ -559,6 +580,8 @@ def _normalize_run_request(payload: Mapping[str, object], database_path: Path) -
     run_id = _require_text("run_id", request.get("run_id"), database_path)
     step_run_id = _optional_text(request.get("step_run_id"))
     artifact_root = _optional_path(request.get("artifact_root"))
+    runtime_root = _optional_path(request.get("runtime_root"))
+    local_secrets_file = _optional_path(request.get("local_secrets_file"))
     runtime_context = request.get("runtime_context")
     if runtime_context is not None and not isinstance(runtime_context, Mapping):
         raise HostCheckError(
@@ -590,6 +613,8 @@ def _normalize_run_request(payload: Mapping[str, object], database_path: Path) -
         "run_id": run_id,
         "step_run_id": step_run_id,
         "artifact_root": artifact_root,
+        "runtime_root": runtime_root,
+        "local_secrets_file": local_secrets_file,
         "runtime_context": dict(runtime_context) if isinstance(runtime_context, Mapping) else {},
         "check_ids": check_ids,
     }
@@ -806,6 +831,7 @@ def _parse_check_definition(raw_check: Mapping[str, object], *, index: int, data
 
     command: str | tuple[str, ...] | None = None
     url: str | None = None
+    headers: dict[str, str] | None = None
     path: str | None = None
     process_selector: str | None = None
     if kind == "command_check":
@@ -813,6 +839,7 @@ def _parse_check_definition(raw_check: Mapping[str, object], *, index: int, data
         _validate_command_success(success, prefix=prefix, database_path=database_path)
     elif kind == "http_check":
         url = _require_text(f"{prefix}.url", raw_check.get("url"), database_path)
+        headers = _parse_headers_value(raw_check.get("headers"), prefix=prefix, database_path=database_path)
         _validate_http_success(success, prefix=prefix, database_path=database_path)
     elif kind == "file_check":
         path = _require_text(f"{prefix}.path", raw_check.get("path"), database_path)
@@ -831,6 +858,7 @@ def _parse_check_definition(raw_check: Mapping[str, object], *, index: int, data
         allowed_project_profiles=tuple(_string_list(raw_check.get("allowed_project_profiles"), field_name=f"{prefix}.allowed_project_profiles", database_path=database_path)),
         command=command,
         url=url,
+        headers=headers,
         path=path,
         process_selector=process_selector,
         success={str(key): value for key, value in success.items()},
@@ -863,6 +891,29 @@ def _parse_command_value(value: object, *, prefix: str, database_path: Path) -> 
         message=f"{prefix}.command must be a string or list of strings",
         database_path=database_path,
     )
+
+
+def _parse_headers_value(value: object, *, prefix: str, database_path: Path) -> dict[str, str] | None:
+    if value is None:
+        return None
+    if not isinstance(value, Mapping):
+        raise HostCheckError(
+            code=HOST_CHECKS_CONFIG_INVALID,
+            message=f"{prefix}.headers must be a mapping/object",
+            database_path=database_path,
+        )
+    headers: dict[str, str] = {}
+    for raw_key, raw_item in value.items():
+        header_name = _optional_text(raw_key)
+        header_value = _optional_text(raw_item)
+        if header_name is None or header_value is None:
+            raise HostCheckError(
+                code=HOST_CHECKS_CONFIG_INVALID,
+                message=f"{prefix}.headers entries must use non-empty string keys and values",
+                database_path=database_path,
+            )
+        headers[header_name] = header_value
+    return headers
 
 
 def _validate_command_success(success: Mapping[str, object], *, prefix: str, database_path: Path) -> None:
@@ -1054,10 +1105,15 @@ def _run_http_check(definition: HostCheckDefinition, runtime_context: Mapping[st
     started_at = _utc_now()
     started_monotonic = time.monotonic()
     rendered_url: str | None = None
+    rendered_headers: dict[str, str] | None = None
     try:
         assert definition.url is not None
         rendered_url = _render_string(definition.url, runtime_context)
-        request = urllib_request.Request(rendered_url, method="GET")
+        rendered_headers = {
+            header_name: _render_string(header_value, runtime_context)
+            for header_name, header_value in (definition.headers or {}).items()
+        }
+        request = urllib_request.Request(rendered_url, headers=rendered_headers, method="GET")
         with urllib_request.urlopen(request, timeout=definition.timeout_seconds) as response:
             status_code = int(response.getcode())
             body = response.read().decode("utf-8", errors="replace")
@@ -1081,7 +1137,7 @@ def _run_http_check(definition: HostCheckDefinition, runtime_context: Mapping[st
             started_at=started_at,
             started_monotonic=started_monotonic,
             message=f"timed out after {definition.timeout_seconds} seconds",
-            observed={"url": rendered_url or definition.url, "timed_out": True},
+            observed={"url": rendered_url or definition.url, "request_headers": rendered_headers, "timed_out": True},
         )
     except urllib_error.URLError as exc:
         return _failed_result(
@@ -1089,7 +1145,7 @@ def _run_http_check(definition: HostCheckDefinition, runtime_context: Mapping[st
             started_at=started_at,
             started_monotonic=started_monotonic,
             message=f"http request failed: {exc.reason}",
-            observed={"url": rendered_url or definition.url, "error": str(exc.reason), "timed_out": False},
+            observed={"url": rendered_url or definition.url, "request_headers": rendered_headers, "error": str(exc.reason), "timed_out": False},
         )
     except ValueError as exc:
         return _blocked_result(
@@ -1097,7 +1153,7 @@ def _run_http_check(definition: HostCheckDefinition, runtime_context: Mapping[st
             started_at=started_at,
             started_monotonic=started_monotonic,
             message=f"invalid http_check url: {exc}",
-            observed={"url": rendered_url or definition.url, "error": str(exc)},
+            observed={"url": rendered_url or definition.url, "request_headers": rendered_headers, "error": str(exc)},
         )
 
     success = definition.success
@@ -1114,6 +1170,7 @@ def _run_http_check(definition: HostCheckDefinition, runtime_context: Mapping[st
         message="passed" if passes else f"http status/body did not satisfy success criteria (status={status_code})",
         observed={
             "url": rendered_url,
+            "request_headers": rendered_headers,
             "status_code": status_code,
             "expected_status_code": expected_status,
             "body": body,
@@ -1376,6 +1433,57 @@ def _terminal_result(
         definition=definition.to_dict(),
         success_criteria=dict(definition.success),
         observed=observed,
+    )
+
+
+def _resolve_host_check_runtime_value_bundle(
+    *,
+    database_path: Path,
+    project_package_root: Path,
+    runtime_root: Path | None,
+    local_secrets_file: Path | None,
+) -> ResolvedRuntimeValueBundle:
+    try:
+        return resolve_runtime_value_bundle(
+            package_root=project_package_root,
+            selection="host_checks",
+            runtime_root=runtime_root,
+            control_root=CONTROL_DIR,
+            local_secrets_file=local_secrets_file,
+        )
+    except RuntimeValueResolutionError as exc:
+        raise HostCheckError(
+            code=HOST_CHECKS_RUNTIME_VALUE_RESOLUTION_FAILED,
+            message=exc.message,
+            database_path=database_path,
+            details=exc.details,
+        ) from exc
+
+
+def _sanitize_host_check_result(
+    result: HostCheckResult,
+    *,
+    redactor: RuntimeValueRedactor,
+) -> HostCheckResult:
+    sanitized_definition = redactor.sanitize_object(result.definition)
+    sanitized_success = redactor.sanitize_object(result.success_criteria)
+    sanitized_observed = redactor.sanitize_object(result.observed)
+    assert isinstance(sanitized_definition, Mapping)
+    assert isinstance(sanitized_success, Mapping)
+    assert isinstance(sanitized_observed, Mapping)
+    return HostCheckResult(
+        check_id=result.check_id,
+        kind=result.kind,
+        severity=result.severity,
+        status=result.status,
+        message=redactor.sanitize_text(result.message) or result.message,
+        timeout_seconds=result.timeout_seconds,
+        started_at=result.started_at,
+        finished_at=result.finished_at,
+        duration_seconds=result.duration_seconds,
+        definition=dict(sanitized_definition),
+        success_criteria=dict(sanitized_success),
+        observed=dict(sanitized_observed),
     )
 
 

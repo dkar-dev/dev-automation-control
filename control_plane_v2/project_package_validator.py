@@ -16,6 +16,7 @@ CAPABILITIES_FILE = "capabilities.yaml"
 BOUNDED_CONTRACT_POLICY_BLOCK = "bounded_contract_generation_v1"
 BOUNDED_CONTRACT_STORAGE_MODEL = "project_package_policy_v1"
 HOST_CHECKS_RUNTIME_BLOCK = "host_checks_v1"
+RUNTIME_VALUE_REFS_BLOCK = "runtime_value_refs_v1"
 HOST_CHECK_KINDS = (
     "command_check",
     "http_check",
@@ -23,6 +24,7 @@ HOST_CHECK_KINDS = (
     "process_check",
 )
 HOST_CHECK_SEVERITIES = ("required", "advisory")
+RUNTIME_VALUE_CLASSIFICATIONS = ("secret", "sensitive_config", "plain_config")
 BOUNDED_CONTRACT_TAXONOMY = (
     "implementation_step",
     "inspection_step",
@@ -231,6 +233,7 @@ def _validate_required_keys(
     runtime_doc = files.get(RUNTIME_FILE)
     if runtime_doc is not None:
         _validate_host_checks_runtime_block(package_root, runtime_doc, errors)
+        _validate_runtime_value_refs_block(package_root, runtime_doc, errors)
 
 
 def _validate_bounded_contract_policy_block(
@@ -562,6 +565,31 @@ def _validate_host_checks_runtime_block(
             _validate_optional_string(package_root, runtime_doc.path, f"{key_path}.success.stderr_contains", success.get("stderr_contains"), errors)
         elif kind == "http_check":
             _require_string_key(package_root, runtime_doc.path, key_path, raw_check, "url", errors)
+            headers = raw_check.get("headers")
+            if headers is not None and not isinstance(headers, dict):
+                errors.append(
+                    ValidationError(
+                        code=WRONG_KEY_TYPE,
+                        message=f"{key_path}.headers must be a mapping",
+                        package_root=package_root,
+                        file_path=runtime_doc.path,
+                        key_path=f"{key_path}.headers",
+                        details=f"actual_type={_yaml_type_name(headers)}",
+                    )
+                )
+            elif isinstance(headers, dict):
+                for header_name, header_value in headers.items():
+                    if not isinstance(header_name, str) or not isinstance(header_value, str):
+                        errors.append(
+                            ValidationError(
+                                code=WRONG_KEY_TYPE,
+                                message=f"{key_path}.headers entries must use string keys and values",
+                                package_root=package_root,
+                                file_path=runtime_doc.path,
+                                key_path=f"{key_path}.headers",
+                            )
+                        )
+                        break
             _validate_optional_integer(package_root, runtime_doc.path, f"{key_path}.success.status_code", success.get("status_code"), errors)
             _validate_optional_string(package_root, runtime_doc.path, f"{key_path}.success.body_contains", success.get("body_contains"), errors)
         elif kind == "file_check":
@@ -584,6 +612,202 @@ def _validate_host_checks_runtime_block(
             _require_string_key(package_root, runtime_doc.path, key_path, raw_check, "process_selector", errors)
             _validate_optional_non_negative_integer(package_root, runtime_doc.path, f"{key_path}.success.min_matches", success.get("min_matches"), errors)
             _validate_optional_non_negative_integer(package_root, runtime_doc.path, f"{key_path}.success.max_matches", success.get("max_matches"), errors)
+
+
+def _validate_runtime_value_refs_block(
+    package_root: Path,
+    runtime_doc: ValidatedYamlDocument,
+    errors: list[ValidationError],
+) -> None:
+    raw_block = runtime_doc.data.get(RUNTIME_VALUE_REFS_BLOCK)
+    if raw_block is None:
+        return
+    if not isinstance(raw_block, dict):
+        errors.append(
+            ValidationError(
+                code=WRONG_KEY_TYPE,
+                message=f"runtime.yaml.{RUNTIME_VALUE_REFS_BLOCK} must be a mapping",
+                package_root=package_root,
+                file_path=runtime_doc.path,
+                key_path=RUNTIME_VALUE_REFS_BLOCK,
+                details=f"actual_type={_yaml_type_name(raw_block)}",
+            )
+        )
+        return
+
+    values = raw_block.get("values")
+    if values is None:
+        errors.append(
+            ValidationError(
+                code=MISSING_REQUIRED_KEY,
+                message=f"Missing required key: {RUNTIME_VALUE_REFS_BLOCK}.values",
+                package_root=package_root,
+                file_path=runtime_doc.path,
+                key_path=f"{RUNTIME_VALUE_REFS_BLOCK}.values",
+            )
+        )
+        return
+    if not isinstance(values, dict):
+        errors.append(
+            ValidationError(
+                code=WRONG_KEY_TYPE,
+                message=f"runtime.yaml.{RUNTIME_VALUE_REFS_BLOCK}.values must be a mapping",
+                package_root=package_root,
+                file_path=runtime_doc.path,
+                key_path=f"{RUNTIME_VALUE_REFS_BLOCK}.values",
+                details=f"actual_type={_yaml_type_name(values)}",
+            )
+        )
+        return
+
+    for raw_key, raw_value in values.items():
+        key_name = str(raw_key).strip()
+        key_path = f"{RUNTIME_VALUE_REFS_BLOCK}.values.{key_name or '<empty>'}"
+        if not key_name:
+            errors.append(
+                ValidationError(
+                    code=WRONG_KEY_TYPE,
+                    message=f"runtime.yaml.{RUNTIME_VALUE_REFS_BLOCK}.values keys must be non-empty strings",
+                    package_root=package_root,
+                    file_path=runtime_doc.path,
+                    key_path=f"{RUNTIME_VALUE_REFS_BLOCK}.values",
+                )
+            )
+            continue
+        if not isinstance(raw_value, dict):
+            errors.append(
+                ValidationError(
+                    code=WRONG_KEY_TYPE,
+                    message=f"runtime.yaml.{key_path} must be a mapping",
+                    package_root=package_root,
+                    file_path=runtime_doc.path,
+                    key_path=key_path,
+                    details=f"actual_type={_yaml_type_name(raw_value)}",
+                )
+            )
+            continue
+
+        classification = raw_value.get("classification")
+        if classification is None:
+            errors.append(
+                ValidationError(
+                    code=MISSING_REQUIRED_KEY,
+                    message=f"Missing required key: {key_path}.classification",
+                    package_root=package_root,
+                    file_path=runtime_doc.path,
+                    key_path=f"{key_path}.classification",
+                )
+            )
+        elif not isinstance(classification, str):
+            errors.append(
+                ValidationError(
+                    code=WRONG_KEY_TYPE,
+                    message=f"runtime.yaml.{key_path}.classification must be a string",
+                    package_root=package_root,
+                    file_path=runtime_doc.path,
+                    key_path=f"{key_path}.classification",
+                    details=f"actual_type={_yaml_type_name(classification)}",
+                )
+            )
+        elif classification not in RUNTIME_VALUE_CLASSIFICATIONS:
+            errors.append(
+                ValidationError(
+                    code=WRONG_KEY_TYPE,
+                    message=f"runtime.yaml.{key_path}.classification must be one of: {', '.join(RUNTIME_VALUE_CLASSIFICATIONS)}",
+                    package_root=package_root,
+                    file_path=runtime_doc.path,
+                    key_path=f"{key_path}.classification",
+                    details=f"actual={classification}",
+                )
+            )
+
+        required = raw_value.get("required")
+        if required is not None and not isinstance(required, bool):
+            errors.append(
+                ValidationError(
+                    code=WRONG_KEY_TYPE,
+                    message=f"runtime.yaml.{key_path}.required must be a boolean",
+                    package_root=package_root,
+                    file_path=runtime_doc.path,
+                    key_path=f"{key_path}.required",
+                    details=f"actual_type={_yaml_type_name(required)}",
+                )
+            )
+
+        ref = raw_value.get("ref")
+        refs = raw_value.get("refs")
+        if ref is not None and not isinstance(ref, str):
+            errors.append(
+                ValidationError(
+                    code=WRONG_KEY_TYPE,
+                    message=f"runtime.yaml.{key_path}.ref must be a string",
+                    package_root=package_root,
+                    file_path=runtime_doc.path,
+                    key_path=f"{key_path}.ref",
+                    details=f"actual_type={_yaml_type_name(ref)}",
+                )
+            )
+        if refs is not None and not isinstance(refs, (str, list)):
+            errors.append(
+                ValidationError(
+                    code=WRONG_KEY_TYPE,
+                    message=f"runtime.yaml.{key_path}.refs must be a string or list of strings",
+                    package_root=package_root,
+                    file_path=runtime_doc.path,
+                    key_path=f"{key_path}.refs",
+                    details=f"actual_type={_yaml_type_name(refs)}",
+                )
+            )
+        elif isinstance(refs, list):
+            for index, item in enumerate(refs):
+                if not isinstance(item, str):
+                    errors.append(
+                        ValidationError(
+                            code=WRONG_KEY_TYPE,
+                            message=f"runtime.yaml.{key_path}.refs[{index}] must be a string",
+                            package_root=package_root,
+                            file_path=runtime_doc.path,
+                            key_path=f"{key_path}.refs[{index}]",
+                            details=f"actual_type={_yaml_type_name(item)}",
+                        )
+                    )
+
+        inline_value = raw_value.get("inline_value")
+        if inline_value is not None and not isinstance(inline_value, (str, int, float, bool)):
+            errors.append(
+                ValidationError(
+                    code=WRONG_KEY_TYPE,
+                    message=f"runtime.yaml.{key_path}.inline_value must be a scalar string/number/boolean",
+                    package_root=package_root,
+                    file_path=runtime_doc.path,
+                    key_path=f"{key_path}.inline_value",
+                    details=f"actual_type={_yaml_type_name(inline_value)}",
+                )
+            )
+        if isinstance(classification, str) and classification in {"secret", "sensitive_config"} and inline_value is not None:
+            errors.append(
+                ValidationError(
+                    code=WRONG_KEY_TYPE,
+                    message=f"runtime.yaml.{key_path}.inline_value is not allowed for classification {classification}",
+                    package_root=package_root,
+                    file_path=runtime_doc.path,
+                    key_path=f"{key_path}.inline_value",
+                )
+            )
+
+        for field_name in ("description", "dispatch_env", "host_check_context_key"):
+            field_value = raw_value.get(field_name)
+            if field_value is not None and not isinstance(field_value, str):
+                errors.append(
+                    ValidationError(
+                        code=WRONG_KEY_TYPE,
+                        message=f"runtime.yaml.{key_path}.{field_name} must be a string",
+                        package_root=package_root,
+                        file_path=runtime_doc.path,
+                        key_path=f"{key_path}.{field_name}",
+                        details=f"actual_type={_yaml_type_name(field_value)}",
+                    )
+                )
 
 
 def _require_string_key(

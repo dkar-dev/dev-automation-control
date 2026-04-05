@@ -14,6 +14,7 @@ import subprocess
 
 from .id_generation import generate_opaque_id
 from .manual_control import ManualControlError, PendingRerunIntent, get_pending_rerun_intent
+from .runtime_secrets import ResolvedRuntimeValueBundle, RuntimeValueRedactor, RuntimeValueResolutionError, resolve_runtime_value_bundle
 from .run_persistence import RunDetails, RunPersistenceError, _connect_run_db, _ensure_required_tables, _resolve_database_path
 from .scheduler_persistence import ClaimedRunMutationResult, DispatchRunPayload, SchedulerPersistenceError, mark_claimed_run_dispatch_failed
 from .step_run_persistence import STEP_RUN_ACTIVE_STATUS, STEP_RUN_TERMINAL_STATUSES, StepRunDetails, finish_step_run, list_step_runs, retry_step_run, start_step_run
@@ -49,6 +50,7 @@ LEGACY_BACKEND_PRECHECK_FAILED = "LEGACY_BACKEND_PRECHECK_FAILED"
 REVIEWER_HANDOFF_MISSING = "REVIEWER_HANDOFF_MISSING"
 RUN_CONTEXT_INVALID = "RUN_CONTEXT_INVALID"
 MANUAL_CONTROL_LOOKUP_FAILED = "MANUAL_CONTROL_LOOKUP_FAILED"
+DISPATCH_RUNTIME_VALUE_RESOLUTION_FAILED = "DISPATCH_RUNTIME_VALUE_RESOLUTION_FAILED"
 
 PROVISIONAL_RUN_REQUEUE_ROLLBACK_TRANSITION_TYPE = "dispatch_step_start_rolled_back"
 
@@ -504,6 +506,8 @@ def dispatch_claimed_run(
     legacy_control_dir: str | Path | None = None,
     executor_runner_path: str | Path | None = None,
     reviewer_runner_path: str | Path | None = None,
+    runtime_root: str | Path | None = None,
+    local_secrets_file: str | Path | None = None,
 ) -> DispatchResult:
     resolved_db_path = _resolve_database_path(database_path)
     normalized_requested_role = _normalize_requested_role(requested_role, resolved_db_path)
@@ -577,24 +581,19 @@ def dispatch_claimed_run(
     )
 
     preflight_paths = _prepare_preflight_paths(run_artifact_directory, role_decision.resolved_role)
-    _write_json(
-        preflight_paths.context_manifest_path,
-        {
-            "phase": "preflight",
-            "requested_role": normalized_requested_role,
-            "resolved_role": role_decision.resolved_role,
-            "dispatch_run": dispatch_run.to_dict(),
-            "runtime_context": legacy_context.to_dict(),
-            "backend": backend_config.to_dict(),
-        },
-    )
     try:
-        _preflight_backend(resolved_db_path, legacy_context, role_decision.resolved_role, backend_config)
+        runtime_value_bundle = _resolve_dispatch_runtime_value_bundle(
+            database_path=resolved_db_path,
+            package_root=dispatch_run.project.package_root,
+            backend=backend_config,
+            runtime_root=runtime_root,
+            local_secrets_file=local_secrets_file,
+        )
     except DispatchAdapterError as exc:
         queue_requeue = _mark_dispatch_failed(
             resolved_db_path,
             dispatch_run,
-            reason_code=LEGACY_BACKEND_PRECHECK_FAILED,
+            reason_code=DISPATCH_RUNTIME_VALUE_RESOLUTION_FAILED,
             note=exc.message,
         )
         _write_json(
@@ -625,6 +624,59 @@ def dispatch_claimed_run(
             warnings=warnings,
             attempt_paths=preflight_paths,
         )
+    dispatch_redactor = runtime_value_bundle.redactor()
+    _write_redacted_json(
+        preflight_paths.context_manifest_path,
+        {
+            "phase": "preflight",
+            "requested_role": normalized_requested_role,
+            "resolved_role": role_decision.resolved_role,
+            "dispatch_run": dispatch_run.to_dict(),
+            "runtime_context": legacy_context.to_dict(),
+            "backend": backend_config.to_dict(),
+            "runtime_values": runtime_value_bundle.to_dict(),
+        },
+        redactor=dispatch_redactor,
+    )
+    try:
+        _preflight_backend(resolved_db_path, legacy_context, role_decision.resolved_role, backend_config)
+    except DispatchAdapterError as exc:
+        queue_requeue = _mark_dispatch_failed(
+            resolved_db_path,
+            dispatch_run,
+            reason_code=LEGACY_BACKEND_PRECHECK_FAILED,
+            note=exc.message,
+        )
+        _write_redacted_json(
+            preflight_paths.failure_manifest_path,
+            {
+                "dispatch_run": dispatch_run.to_dict(),
+                "role_decision": role_decision.to_dict(),
+                "error": exc.to_dict(),
+                "queue_requeue": queue_requeue.to_dict(),
+                "runtime_values": runtime_value_bundle.to_dict(),
+            },
+            redactor=dispatch_redactor,
+        )
+        warnings, artifacts = _record_dispatch_artifacts(
+            resolved_db_path,
+            dispatch_run,
+            step_run_id=None,
+            role=None,
+            attempt_paths=preflight_paths,
+        )
+        return DispatchResult(
+            dispatch_run=dispatch_run,
+            role_decision=role_decision,
+            step_run=None,
+            technical_success=False,
+            backend_started=False,
+            backend_exit_code=None,
+            queue_requeue=queue_requeue,
+            artifacts=artifacts,
+            warnings=warnings,
+            attempt_paths=preflight_paths,
+        )
 
     pre_start_run_status = dispatch_run.run.status
     pending_rerun = _load_pending_rerun_intent_or_raise(resolved_db_path, dispatch_run.run.id)
@@ -635,7 +687,7 @@ def dispatch_claimed_run(
         pending_rerun=pending_rerun,
     )
     attempt_paths = _prepare_attempt_paths(run_artifact_directory, role_decision.resolved_role, started_step_run.step_run.id)
-    _write_json(
+    _write_redacted_json(
         attempt_paths.context_manifest_path,
         {
             "phase": "started",
@@ -644,9 +696,11 @@ def dispatch_claimed_run(
             "dispatch_run": dispatch_run.to_dict(),
             "runtime_context": legacy_context.to_dict(),
             "backend": backend_config.to_dict(),
+            "runtime_values": runtime_value_bundle.to_dict(),
             "step_run_id": started_step_run.step_run.id,
             "pre_start_run_status": pre_start_run_status,
         },
+        redactor=dispatch_redactor,
     )
 
     try:
@@ -661,6 +715,7 @@ def dispatch_claimed_run(
             role=role_decision.resolved_role,
             backend=backend_config,
             attempt_paths=attempt_paths,
+            runtime_value_bundle=runtime_value_bundle,
         )
     except OSError as exc:
         _rollback_started_step_run(resolved_db_path, started_step_run.step_run.id, pre_start_run_status=pre_start_run_status)
@@ -670,14 +725,16 @@ def dispatch_claimed_run(
             reason_code=LEGACY_BACKEND_PRECHECK_FAILED,
             note=str(exc),
         )
-        _write_json(
+        _write_redacted_json(
             attempt_paths.failure_manifest_path,
             {
                 "dispatch_run": dispatch_run.to_dict(),
                 "role_decision": role_decision.to_dict(),
                 "error": {"message": str(exc)},
                 "queue_requeue": queue_requeue.to_dict(),
+                "runtime_values": runtime_value_bundle.to_dict(),
             },
+            redactor=dispatch_redactor,
         )
         warnings, artifacts = _record_dispatch_artifacts(
             resolved_db_path,
@@ -700,6 +757,7 @@ def dispatch_claimed_run(
         )
 
     sandbox_state = _read_json_optional(attempt_paths.legacy_control_directory / "state" / "current.json") or {}
+    _sanitize_dispatch_runtime_files(attempt_paths, dispatch_redactor)
     outcome = _build_dispatch_outcome(
         backend_started=backend_started,
         backend_exit_code=backend_exit_code,
@@ -710,7 +768,7 @@ def dispatch_claimed_run(
         started_step_run.step_run.id,
         outcome.step_terminal_status or "failed",
     )
-    _write_json(
+    _write_redacted_json(
         attempt_paths.result_manifest_path,
         {
             "dispatch_run": dispatch_run.to_dict(),
@@ -718,8 +776,10 @@ def dispatch_claimed_run(
             "step_run_id": finished_step_run.step_run.id,
             "runtime_context": legacy_context.to_dict(),
             "backend": backend_config.to_dict(),
+            "runtime_values": runtime_value_bundle.to_dict(),
             "dispatch_outcome": outcome.to_dict(),
         },
+        redactor=dispatch_redactor,
     )
     warnings, artifacts = _record_dispatch_artifacts(
         resolved_db_path,
@@ -1036,6 +1096,31 @@ def _resolve_backend_config(
     )
 
 
+def _resolve_dispatch_runtime_value_bundle(
+    *,
+    database_path: Path,
+    package_root: Path,
+    backend: LegacyDispatchBackendConfig,
+    runtime_root: str | Path | None,
+    local_secrets_file: str | Path | None,
+) -> ResolvedRuntimeValueBundle:
+    try:
+        return resolve_runtime_value_bundle(
+            package_root=package_root,
+            selection="dispatch_env",
+            runtime_root=runtime_root,
+            control_root=backend.control_dir,
+            local_secrets_file=local_secrets_file,
+        )
+    except RuntimeValueResolutionError as exc:
+        raise DispatchAdapterError(
+            code=DISPATCH_RUNTIME_VALUE_RESOLUTION_FAILED,
+            message=exc.message,
+            database_path=database_path,
+            details=exc.details,
+        ) from exc
+
+
 def _preflight_backend(
     database_path: Path,
     context: LegacyDispatchRuntimeContext,
@@ -1233,11 +1318,13 @@ def _run_legacy_backend(
     role: str,
     backend: LegacyDispatchBackendConfig,
     attempt_paths: DispatchAttemptPaths,
+    runtime_value_bundle: ResolvedRuntimeValueBundle,
 ) -> tuple[bool, int]:
     assert attempt_paths.legacy_control_directory is not None
     runner_name = backend.runner_path_for_role(role).name
     runner_path = attempt_paths.legacy_control_directory / "scripts" / runner_name
     env = os.environ.copy()
+    env.update(runtime_value_bundle.dispatch_env())
     if role == "reviewer":
         env["CONTROL_REVIEWER_SKIP_COMPLETION"] = "1"
     with attempt_paths.stdout_log_path.open("w", encoding="utf-8") as stdout_handle, attempt_paths.stderr_log_path.open("w", encoding="utf-8") as stderr_handle:
@@ -1251,6 +1338,35 @@ def _run_legacy_backend(
             check=False,
         )
     return True, completed.returncode
+
+
+def _sanitize_dispatch_runtime_files(
+    attempt_paths: DispatchAttemptPaths,
+    redactor: RuntimeValueRedactor,
+) -> None:
+    candidate_paths = [
+        attempt_paths.stdout_log_path,
+        attempt_paths.stderr_log_path,
+        attempt_paths.context_manifest_path,
+        attempt_paths.result_manifest_path,
+        attempt_paths.failure_manifest_path,
+    ]
+    if attempt_paths.legacy_control_directory is not None:
+        candidate_paths.append(attempt_paths.legacy_control_directory / "state" / "current.json")
+    if attempt_paths.legacy_runtime_directory is not None:
+        candidate_paths.extend(
+            [
+                attempt_paths.legacy_runtime_directory / "state.json",
+                attempt_paths.legacy_runtime_directory / "result.json",
+                attempt_paths.legacy_runtime_directory / "outbox" / "executor-report.md",
+                attempt_paths.legacy_runtime_directory / "outbox" / "executor-last-message.md",
+                attempt_paths.legacy_runtime_directory / "outbox" / "reviewer-report.md",
+                attempt_paths.legacy_runtime_directory / "outbox" / "reviewer-last-message.md",
+            ]
+        )
+    for candidate_path in candidate_paths:
+        if candidate_path.is_file():
+            redactor.sanitize_file(candidate_path)
 
 
 def _build_dispatch_outcome(
@@ -1685,6 +1801,17 @@ def _slug_timestamp() -> str:
 def _write_json(path: Path, payload: Mapping[str, object]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+
+
+def _write_redacted_json(
+    path: Path,
+    payload: Mapping[str, object],
+    *,
+    redactor: RuntimeValueRedactor,
+) -> None:
+    sanitized = redactor.sanitize_object(payload)
+    assert isinstance(sanitized, Mapping)
+    _write_json(path, sanitized)
 
 
 def _read_json_optional(path: Path) -> dict[str, object] | None:

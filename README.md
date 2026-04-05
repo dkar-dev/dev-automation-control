@@ -22,6 +22,7 @@ This repo is the control plane for local orchestration between `n8n`, operator t
 - The v2 scaffold now also includes a formal deployable-green decision gate v1, so reviewer outcome plus latest host-side checks can produce one append-only final decision `deployable_green | not_green | blocked` without becoming a deployment controller.
 - The v2 scaffold now also includes an explicit release handoff bundle v1, so a deployable-green run can be exported as one append-only release-ready package for an operator or external deploy system without performing deployment.
 - The v2 scaffold now also includes a bounded single-node runtime supervisor v1, so one Linux machine can keep the localhost API and bounded worker loop alive behind explicit start/stop/status/restart semantics without adding multi-worker or distributed control.
+- The v2 scaffold now also includes a bounded runtime secrets/config resolution layer v1, so symbolic secret refs can be resolved on one Linux host from env vars or a local secrets file without persisting raw values into SQLite, manifests, or inspection APIs.
 - Cutover from the legacy bridge transport to the v2 HTTP API is controlled and partial; the backend runner layer remains intentionally legacy.
 - The first executable v2 utilities now live in:
   - `scripts/validate-project-package`
@@ -69,6 +70,8 @@ This repo is the control plane for local orchestration between `n8n`, operator t
   - `scripts/restart-control-plane-runtime`
   - `scripts/status-control-plane-runtime`
   - `scripts/run-control-plane-runtime-foreground`
+  - `scripts/resolve-runtime-secrets`
+  - `scripts/check-runtime-secrets`
   - `scripts/list-contract-templates`
   - `scripts/generate-bounded-contract`
   - `scripts/show-bounded-contract`
@@ -89,6 +92,7 @@ This repo is the control plane for local orchestration between `n8n`, operator t
   - `scripts/smoke-control-plane-v2-intake.sh`
   - `scripts/smoke-control-plane-v2-api.sh`
   - `scripts/smoke-control-plane-v2-runtime-supervisor.sh`
+  - `scripts/smoke-control-plane-v2-runtime-secrets.sh`
   - `scripts/smoke-control-plane-v2-contracts.sh`
   - `scripts/smoke-control-plane-v2-host-checks.sh`
   - `scripts/smoke-control-plane-v2-deployable-green.sh`
@@ -99,6 +103,7 @@ This repo is the control plane for local orchestration between `n8n`, operator t
   - [`docs/control-plane-v2/manual-dispatch.md`](/home/dkar/workspace/control/docs/control-plane-v2/manual-dispatch.md)
   - [`docs/control-plane-v2/local-http-api.md`](/home/dkar/workspace/control/docs/control-plane-v2/local-http-api.md)
   - [`docs/control-plane-v2/runtime-supervisor.md`](/home/dkar/workspace/control/docs/control-plane-v2/runtime-supervisor.md)
+  - [`docs/control-plane-v2/runtime-secrets.md`](/home/dkar/workspace/control/docs/control-plane-v2/runtime-secrets.md)
   - [`docs/control-plane-v2/bounded-contract-generation.md`](/home/dkar/workspace/control/docs/control-plane-v2/bounded-contract-generation.md)
   - [`docs/control-plane-v2/host-checks.md`](/home/dkar/workspace/control/docs/control-plane-v2/host-checks.md)
   - [`docs/control-plane-v2/deployable-green.md`](/home/dkar/workspace/control/docs/control-plane-v2/deployable-green.md)
@@ -126,6 +131,7 @@ This repo is the control plane for local orchestration between `n8n`, operator t
 ## Preferred local orchestration path
 - Submit bounded work with `POST /v1/tasks/submit` or `./scripts/submit-bounded-task`
 - Keep the single-node runtime alive with `./scripts/start-control-plane-runtime`, inspect it with `./scripts/status-control-plane-runtime`, and stop it with `./scripts/stop-control-plane-runtime`
+- Inspect or validate symbolic runtime secret refs with `./scripts/resolve-runtime-secrets`, `./scripts/check-runtime-secrets`, or the redacted HTTP endpoints under `/v1/runtime/secrets/*`
 - Generate bounded contracts with `POST /v1/contracts/generate` or `./scripts/generate-bounded-contract`
 - Progress execution with `POST /v1/worker/tick`, `POST /v1/worker/run-until-idle`, `./scripts/run-worker-tick`, or `./scripts/run-worker-until-idle`
 - Run the host-side deploy gate with `POST /v1/checks/run`, `GET /v1/checks/{run_id}`, `./scripts/run-host-checks`, or `./scripts/show-host-check-results`

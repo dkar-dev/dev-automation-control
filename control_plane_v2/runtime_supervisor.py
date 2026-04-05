@@ -681,6 +681,8 @@ def create_control_plane_runtime_config(
         ),
     )
 
+    base_worker_runtime_config = worker_runtime_config or WorkerRuntimeConfig()
+
     try:
         api_config = create_control_plane_api_config(
             host=api_host,
@@ -689,6 +691,8 @@ def create_control_plane_runtime_config(
             default_artifact_root=resolved_artifact_root,
             default_workspace_root=resolved_workspace_root,
             default_worker_log_root=resolved_worker_log_root,
+            default_runtime_root=base_paths.runtime_root,
+            default_local_secrets_file=base_worker_runtime_config.local_secrets_file,
         )
     except ControlPlaneApiConfigError as exc:
         raise RuntimeSupervisorError(
@@ -715,7 +719,6 @@ def create_control_plane_runtime_config(
         default=None,
     )
 
-    base_worker_runtime_config = worker_runtime_config or WorkerRuntimeConfig()
     resolved_worker_runtime_config = WorkerRuntimeConfig(
         runtime_context=dict(base_worker_runtime_config.runtime_context) if base_worker_runtime_config.runtime_context is not None else None,
         artifact_root=base_worker_runtime_config.artifact_root or resolved_artifact_root,
@@ -737,6 +740,8 @@ def create_control_plane_runtime_config(
         legacy_control_dir=base_worker_runtime_config.legacy_control_dir,
         executor_runner_path=base_worker_runtime_config.executor_runner_path,
         reviewer_runner_path=base_worker_runtime_config.reviewer_runner_path,
+        runtime_root=base_worker_runtime_config.runtime_root or base_paths.runtime_root,
+        local_secrets_file=base_worker_runtime_config.local_secrets_file,
         claim_now=base_worker_runtime_config.claim_now,
     )
 
@@ -1053,6 +1058,8 @@ def _serialize_worker_runtime_config(config: WorkerRuntimeConfig) -> dict[str, o
         "legacy_control_dir": str(config.legacy_control_dir) if config.legacy_control_dir is not None else None,
         "executor_runner_path": str(config.executor_runner_path) if config.executor_runner_path is not None else None,
         "reviewer_runner_path": str(config.reviewer_runner_path) if config.reviewer_runner_path is not None else None,
+        "runtime_root": str(config.runtime_root) if config.runtime_root is not None else None,
+        "local_secrets_file": str(config.local_secrets_file) if config.local_secrets_file is not None else None,
         "claim_now": config.claim_now,
     }
 
@@ -1086,6 +1093,8 @@ def _deserialize_worker_runtime_config(payload: object) -> WorkerRuntimeConfig |
         legacy_control_dir=_resolve_optional_path(payload.get("legacy_control_dir")),
         executor_runner_path=_resolve_optional_path(payload.get("executor_runner_path")),
         reviewer_runner_path=_resolve_optional_path(payload.get("reviewer_runner_path")),
+        runtime_root=_resolve_optional_path(payload.get("runtime_root")),
+        local_secrets_file=_resolve_optional_path(payload.get("local_secrets_file")),
         claim_now=_optional_string(payload.get("claim_now")),
     )
 

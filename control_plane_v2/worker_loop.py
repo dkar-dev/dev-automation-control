@@ -86,6 +86,8 @@ class WorkerRuntimeConfig:
     legacy_control_dir: Path | None = None
     executor_runner_path: Path | None = None
     reviewer_runner_path: Path | None = None
+    runtime_root: Path | None = None
+    local_secrets_file: Path | None = None
     claim_now: str | None = None
 
     def dispatch_kwargs(self) -> dict[str, object]:
@@ -109,6 +111,8 @@ class WorkerRuntimeConfig:
             "legacy_control_dir": self.legacy_control_dir,
             "executor_runner_path": self.executor_runner_path,
             "reviewer_runner_path": self.reviewer_runner_path,
+            "runtime_root": self.runtime_root,
+            "local_secrets_file": self.local_secrets_file,
         }
 
     def effective_mode(self) -> str:

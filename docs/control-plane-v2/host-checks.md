@@ -84,11 +84,14 @@ Runtime placeholders:
   - `step_run_id`
   - `project_repo_path`
   - explicit `runtime_context` overrides passed to the CLI or HTTP API
+- `http_check.headers` also supports the same placeholder rendering.
+- Secret-backed placeholders should come from `runtime.yaml.runtime_value_refs_v1` through `host_check_context_key`, not from raw secret literals in the project package.
 
 Execution notes:
 - `command_check` runs with `project_repo_path` as the working directory when that runtime field exists.
 - Relative `file_check.path` values resolve against `project_repo_path`.
 - `http_check` is `GET`-only in v1.
+- `http_check` may send static or rendered request headers.
 - `process_check` matches `process_selector` as a substring against `ps -eo pid=,comm=,args=`.
 
 ## Success Criteria

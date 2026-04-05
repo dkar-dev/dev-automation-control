@@ -1,8 +1,8 @@
 # Project Package Config Schema (v2 scaffold)
 
 ## Scope
-- This document defines the current minimal contract for a project package in the Control Plane v2 scaffold.
-- It intentionally avoids runtime-specific behavior and fields not approved yet.
+- This document defines the current bounded contract for a project package in the Control Plane v2 scaffold.
+- It covers only approved v1 blocks that are already consumed by the runtime, API, worker, cleanup, host-checks, and secrets/config resolution layers.
 
 ## Package location and structure
 - Each package lives under: `projects/<project-name>/`
@@ -21,7 +21,7 @@
 | `project.yaml` | Package-level metadata and contract version | `schema_version` | Not applicable |
 | `workflow.yaml` | Workflow contract placeholder | none yet | Yes |
 | `policy.yaml` | Policy contract placeholder plus optional cleanup retention policy | none yet | Yes |
-| `runtime.yaml` | Runtime contract placeholder plus optional bounded-task intake defaults | none yet | Yes |
+| `runtime.yaml` | Runtime contract placeholder plus optional bounded-task intake defaults, host checks, and runtime value refs | none yet | Yes |
 | `instructions.yaml` | Instruction contract placeholder plus optional bounded-task instruction defaults | none yet | Yes |
 | `capabilities.yaml` | Capability declarations | `sections` (mapping) | Yes, `sections: {}` is valid |
 
@@ -79,6 +79,54 @@ bounded_task_runtime_v1:
   - `instructions`
 - If neither explicit paths nor `workspace_root` are available, bounded-task submission fails explicitly.
 
+## Optional `runtime.yaml.runtime_value_refs_v1`
+
+Current bounded single-node secret/config declaration block:
+
+```yaml
+runtime_value_refs_v1:
+  values:
+    github_token:
+      classification: secret
+      required: true
+      refs:
+        - env:GITHUB_TOKEN
+        - file:github.token
+      dispatch_env: GITHUB_TOKEN
+      description: GitHub token exposed only to the immediate dispatch environment
+
+    deploy_webhook_url:
+      classification: sensitive_config
+      refs:
+        - env:DEPLOY_WEBHOOK_URL
+        - file:deploy.webhook_url
+      host_check_context_key: deploy_webhook_url
+
+    repo_path:
+      classification: plain_config
+      inline_value: /home/example/workspace/projects/sample-project
+      dispatch_env: PROJECT_REPO_PATH
+```
+
+- Block name is fixed: `runtime.yaml.runtime_value_refs_v1`.
+- Entries live under `runtime_value_refs_v1.values.<key>`.
+- `classification` is required and must be one of:
+  - `secret`
+  - `sensitive_config`
+  - `plain_config`
+- Allowed sources in v1:
+  - `env:<NAME>`
+  - `file:<key>`
+  - `inline_value` only for `plain_config`
+- Optional fields:
+  - `required`
+  - `description`
+  - `dispatch_env`
+  - `host_check_context_key`
+- Raw secret values must not be stored in the project package.
+- Use symbolic refs only. Resolution happens later on the single Linux host from env vars or the local secrets file.
+- Detailed runtime behavior, redaction, and CLI/API inspection live in [`docs/control-plane-v2/runtime-secrets.md`](/home/dkar/workspace/control/docs/control-plane-v2/runtime-secrets.md).
+
 ## Optional `instructions.yaml.bounded_task_intake_v1`
 
 Current optional bounded task instruction-default block:
@@ -112,6 +160,7 @@ bounded_task_intake_v1:
 - TODO(OPEN_ISSUE): Approve minimal mandatory keys for `workflow.yaml`.
 - TODO(OPEN_ISSUE): Decide whether `cleanup_v1` remains optional or becomes part of a broader required policy contract.
 - TODO(OPEN_ISSUE): Decide whether bounded-task intake config blocks stay optional or graduate into a stricter project runtime contract.
+- TODO(OPEN_ISSUE): Decide whether `runtime_value_refs_v1` stays runtime-local only or grows into a broader distributed secret model later.
 - TODO(OPEN_ISSUE): Approve minimal mandatory keys for `runtime.yaml`.
 - TODO(OPEN_ISSUE): Approve minimal mandatory keys for `instructions.yaml`.
 - TODO(OPEN_ISSUE): Approve canonical capabilities sections list.

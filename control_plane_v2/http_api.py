@@ -14,6 +14,7 @@ from .id_generation import generate_opaque_id
 from .manual_control import ManualControlError, force_stop_run, pause_run, rerun_run_step, resume_run, show_run_control_state
 from .run_persistence import RunPersistenceError
 from .runtime_cleanup_manager import CLEANUP_SCOPES, CleanupManagerError, run_cleanup_once
+from .runtime_secrets import RuntimeValueResolutionError, resolve_runtime_value_bundle_for_selector
 from .step_run_persistence import StepRunPersistenceError, get_step_run
 from .task_intake import TaskIntakeError, list_submitted_tasks, show_submitted_task, submit_bounded_task
 from .host_checks import HostCheckError, run_host_checks, show_host_check_results
@@ -30,6 +31,8 @@ API_ENV_SQLITE_DB = "CONTROL_PLANE_API_SQLITE_DB"
 API_ENV_ARTIFACT_ROOT = "CONTROL_PLANE_API_ARTIFACT_ROOT"
 API_ENV_WORKSPACE_ROOT = "CONTROL_PLANE_API_WORKSPACE_ROOT"
 API_ENV_WORKER_LOG_ROOT = "CONTROL_PLANE_API_WORKER_LOG_ROOT"
+API_ENV_RUNTIME_ROOT = "CONTROL_PLANE_API_RUNTIME_ROOT"
+API_ENV_LOCAL_SECRETS_FILE = "CONTROL_PLANE_API_LOCAL_SECRETS_FILE"
 API_SERVER_NAME = "control-plane-v2-api/0.1"
 LOCAL_BIND_HOSTS = {"127.0.0.1", "localhost"}
 JSON_CONTENT_TYPES = ("application/json",)
@@ -64,6 +67,8 @@ class ControlPlaneApiConfig:
     default_artifact_root: Path | None = None
     default_workspace_root: Path | None = None
     default_worker_log_root: Path | None = None
+    default_runtime_root: Path | None = None
+    default_local_secrets_file: Path | None = None
 
     @property
     def base_url(self) -> str:
@@ -77,6 +82,8 @@ class ControlPlaneApiConfig:
             "default_artifact_root": str(self.default_artifact_root) if self.default_artifact_root is not None else None,
             "default_workspace_root": str(self.default_workspace_root) if self.default_workspace_root is not None else None,
             "default_worker_log_root": str(self.default_worker_log_root) if self.default_worker_log_root is not None else None,
+            "default_runtime_root": str(self.default_runtime_root) if self.default_runtime_root is not None else None,
+            "default_local_secrets_file": str(self.default_local_secrets_file) if self.default_local_secrets_file is not None else None,
             "base_url": self.base_url,
             "localhost_only": True,
         }
@@ -134,6 +141,8 @@ def create_control_plane_api_config(
     default_artifact_root: str | Path | None = None,
     default_workspace_root: str | Path | None = None,
     default_worker_log_root: str | Path | None = None,
+    default_runtime_root: str | Path | None = None,
+    default_local_secrets_file: str | Path | None = None,
 ) -> ControlPlaneApiConfig:
     resolved_host = (host or os.environ.get(API_ENV_HOST) or API_DEFAULT_HOST).strip()
     if resolved_host not in LOCAL_BIND_HOSTS:
@@ -183,6 +192,12 @@ def create_control_plane_api_config(
         default_worker_log_root=_resolve_optional_path(
             default_worker_log_root if default_worker_log_root is not None else os.environ.get(API_ENV_WORKER_LOG_ROOT)
         ),
+        default_runtime_root=_resolve_optional_path(
+            default_runtime_root if default_runtime_root is not None else os.environ.get(API_ENV_RUNTIME_ROOT)
+        ),
+        default_local_secrets_file=_resolve_optional_path(
+            default_local_secrets_file if default_local_secrets_file is not None else os.environ.get(API_ENV_LOCAL_SECRETS_FILE)
+        ),
     )
 
 
@@ -199,6 +214,32 @@ class ControlPlaneApiApplication:
             "base_url": self.config.base_url,
             "localhost_only": True,
         }
+
+    def runtime_secret_status(self, query: Mapping[str, Sequence[str]]) -> dict[str, object]:
+        bundle = resolve_runtime_value_bundle_for_selector(
+            database_path=self.config.sqlite_db,
+            run_id=_query_single(query, "run_id"),
+            project_key=_query_single(query, "project_key"),
+            package_root=_query_single(query, "package_root"),
+            selection=_query_single(query, "selection") or "all",
+            runtime_root=_query_single(query, "runtime_root") or self.config.default_runtime_root,
+            local_secrets_file=_query_single(query, "local_secrets_file") or self.config.default_local_secrets_file,
+            require_all_required=False,
+        )
+        return {"runtime_values": bundle.to_dict()}
+
+    def check_runtime_secrets(self, payload: Mapping[str, object]) -> dict[str, object]:
+        bundle = resolve_runtime_value_bundle_for_selector(
+            database_path=self.config.sqlite_db,
+            run_id=_optional_text(payload.get("run_id")),
+            project_key=_optional_text(payload.get("project_key")),
+            package_root=_optional_text(payload.get("package_root")),
+            selection=_optional_text(payload.get("selection")) or "all",
+            runtime_root=_optional_text(payload.get("runtime_root")) or self.config.default_runtime_root,
+            local_secrets_file=_optional_text(payload.get("local_secrets_file")) or self.config.default_local_secrets_file,
+            require_all_required=True,
+        )
+        return {"runtime_values": bundle.to_dict()}
 
     def submit_task(self, payload: Mapping[str, object]) -> dict[str, object]:
         submission_payload = dict(payload)
@@ -325,6 +366,10 @@ class ControlPlaneApiApplication:
         request_payload = dict(payload)
         if "artifact_root" not in request_payload and self.config.default_artifact_root is not None:
             request_payload["artifact_root"] = str(self.config.default_artifact_root)
+        if "runtime_root" not in request_payload and self.config.default_runtime_root is not None:
+            request_payload["runtime_root"] = str(self.config.default_runtime_root)
+        if "local_secrets_file" not in request_payload and self.config.default_local_secrets_file is not None:
+            request_payload["local_secrets_file"] = str(self.config.default_local_secrets_file)
         result = run_host_checks(self.config.sqlite_db, request_payload)
         return {"host_checks": result.to_dict()}
 
@@ -406,6 +451,16 @@ class ControlPlaneApiApplication:
             legacy_control_dir=_resolve_optional_path(payload.get("legacy_control_dir")),
             executor_runner_path=_resolve_optional_path(payload.get("executor_runner_path")),
             reviewer_runner_path=_resolve_optional_path(payload.get("reviewer_runner_path")),
+            runtime_root=_path_from_payload_or_default(
+                payload,
+                "runtime_root",
+                self.config.default_runtime_root,
+            ),
+            local_secrets_file=_path_from_payload_or_default(
+                payload,
+                "local_secrets_file",
+                self.config.default_local_secrets_file,
+            ),
             claim_now=_optional_text(payload.get("claim_now")),
         )
 
@@ -439,7 +494,7 @@ class ControlPlaneApiHandler(BaseHTTPRequestHandler):
             self._send_envelope(status, request_id, data=data, error=None)
         except ApiRequestError as exc:
             self._send_envelope(exc.http_status, request_id, data=None, error=exc.to_dict())
-        except (TaskIntakeError, WorkerLoopError, ManualControlError, CleanupManagerError, StepRunPersistenceError, RunPersistenceError, BoundedContractError, HostCheckError, DeployableGreenError, ReleaseHandoffError) as exc:
+        except (TaskIntakeError, WorkerLoopError, ManualControlError, CleanupManagerError, StepRunPersistenceError, RunPersistenceError, BoundedContractError, HostCheckError, DeployableGreenError, ReleaseHandoffError, RuntimeValueResolutionError) as exc:
             mapped = _map_domain_error(exc)
             self._send_envelope(mapped.http_status, request_id, data=None, error=mapped.to_dict())
         except Exception as exc:
@@ -465,6 +520,16 @@ class ControlPlaneApiHandler(BaseHTTPRequestHandler):
             if self.command != "GET":
                 raise ApiRequestError(405, METHOD_NOT_ALLOWED, "method not allowed for /v1/health")
             return 200, application.health()
+
+        if path == "/v1/runtime/secrets/status":
+            if self.command != "GET":
+                raise ApiRequestError(405, METHOD_NOT_ALLOWED, "method not allowed for /v1/runtime/secrets/status")
+            return 200, application.runtime_secret_status(query)
+
+        if path == "/v1/runtime/secrets/check":
+            if self.command != "POST":
+                raise ApiRequestError(405, METHOD_NOT_ALLOWED, "method not allowed for /v1/runtime/secrets/check")
+            return 200, application.check_runtime_secrets(self._read_json_body())
 
         if path == "/v1/tasks":
             if self.command == "GET":
@@ -670,6 +735,8 @@ def _error_stage(exc: Exception) -> str:
         return "deployable_green"
     if isinstance(exc, ReleaseHandoffError):
         return "release_handoff"
+    if isinstance(exc, RuntimeValueResolutionError):
+        return "runtime_secrets"
     return "unknown"
 
 
@@ -692,6 +759,7 @@ def _http_status_for_error_code(code: str) -> int:
         "RELEASE_HANDOFF_RUN_SCOPE_INVALID",
         "RELEASE_HANDOFF_NOT_ELIGIBLE",
         "RELEASE_HANDOFF_COMMIT_MISSING",
+        "RUNTIME_VALUE_REQUIRED_MISSING",
         RUN_STEP_MISMATCH,
     }:
         return 409
@@ -705,6 +773,9 @@ def _http_status_for_error_code(code: str) -> int:
         "HOST_CHECKS_REQUEST_INVALID",
         "DEPLOYABLE_GREEN_REQUEST_INVALID",
         "RELEASE_HANDOFF_REQUEST_INVALID",
+        "RUNTIME_VALUE_CONFIG_INVALID",
+        "RUNTIME_VALUE_REQUEST_INVALID",
+        "RUNTIME_VALUE_LOCAL_FILE_INVALID",
     }:
         return 400
     if "INVALID" in code or "UNSUPPORTED" in code:

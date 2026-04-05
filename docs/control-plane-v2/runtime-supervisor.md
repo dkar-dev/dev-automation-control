@@ -27,6 +27,7 @@ This keeps v1 bounded and single-node while still making API and worker failures
 - append structured runtime events to a JSONL log
 - run the existing localhost API on `127.0.0.1` / `localhost`
 - run bounded worker cycles continuously with a configurable poll interval
+- thread the runtime root and optional local secrets file into the API and worker runtime config
 - expose `start`, `stop`, `status`, `restart`, and `foreground`
 
 The supervisor does not duplicate application logic from:
