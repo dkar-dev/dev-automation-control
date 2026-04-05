@@ -51,6 +51,19 @@ bounded_task_runtime_v1:
   auto_commit: false
   source: api-config-source
   thread_label: api-config-thread
+host_checks_v1:
+  checks:
+    - id: required_pass
+      kind: command_check
+      enabled: true
+      severity: required
+      command:
+        - python3
+        - -c
+        - "import sys; sys.exit(0)"
+      timeout_seconds: 5
+      success:
+        exit_code: 0
 EOF
 cat > "$TMP_ROOT/packages/demo/instructions.yaml" <<'EOF'
 bounded_task_intake_v1:
@@ -345,6 +358,31 @@ assert tick_data["claimed_run_id"] == run_id, worker_tick
 assert tick_data["roles_dispatched"] == ["executor", "reviewer"], worker_tick
 assert tick_data["reviewer_ingestion_happened"] is True, worker_tick
 assert tick_data["final_run_status"] == "completed", worker_tick
+
+checks_run = request_json(
+    "POST",
+    "/v1/checks/run",
+    payload={
+        "run_id": run_id,
+        "check_ids": ["required_pass"],
+    },
+)
+assert checks_run["data"]["host_checks"]["verdict"] == "green", checks_run
+
+checks_show = request_json("GET", f"/v1/checks/{urllib.parse.quote(run_id)}")
+assert checks_show["data"]["host_check_results"]["latest_result"]["verdict"] == "green", checks_show
+
+green_decision = request_json(
+    "POST",
+    "/v1/green/decide",
+    payload={
+        "run_id": run_id,
+    },
+)
+assert green_decision["data"]["deployable_green_decision"]["decision_status"] == "deployable_green", green_decision
+
+green_history = request_json("GET", f"/v1/green/{urllib.parse.quote(run_id)}")
+assert green_history["data"]["deployable_green_decisions"]["latest_decision"]["decision_status"] == "deployable_green", green_history
 
 idle_loop = request_json("POST", "/v1/worker/run-until-idle", payload={"max_ticks": 5})
 assert idle_loop["data"]["worker_loop"]["ended_reason"] == "idle", idle_loop

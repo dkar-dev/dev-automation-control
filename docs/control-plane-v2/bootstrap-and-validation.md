@@ -2,7 +2,7 @@
 
 ## Scope
 - This step adds the first executable infrastructure layer for the v2 scaffold only.
-- It provides strict project package validation, SQLite schema bootstrap/init, SQLite migration management, project registry/import, bounded task intake/run submission, root run creation/inspection, step_run lifecycle utilities, reviewer outcome/follow-up persistence, provisional scheduler claim/release primitives, a bounded manual dispatch adapter for claimed runs, a bounded single-worker loop v1, a bounded manual control/recovery layer v1, a bounded runtime cleanup manager v1, and a thin localhost-only HTTP API v1 over those same primitives.
+- It provides strict project package validation, SQLite schema bootstrap/init, SQLite migration management, project registry/import, bounded task intake/run submission, root run creation/inspection, step_run lifecycle utilities, reviewer outcome/follow-up persistence, provisional scheduler claim/release primitives, a bounded manual dispatch adapter for claimed runs, a bounded single-worker loop v1, a bounded manual control/recovery layer v1, a bounded runtime cleanup manager v1, a bounded host-side checks matrix v1, a formal deployable-green decision gate v1, and a thin localhost-only HTTP API v1 over those same primitives.
 - It still does not implement a daemon/service runtime, multi-worker protocol, or auto-continue policy engine.
 
 ## Project package validation
@@ -93,6 +93,7 @@ SQLite migration behavior in this step:
   - legacy untracked v3 schema that already includes cleanup audit columns/tables but lacks `schema_migrations`
   - legacy untracked v4 schema that already includes `contract_manifests` but lacks `schema_migrations`
   - legacy untracked v5 schema that already includes `host_check_runs` but lacks `schema_migrations`
+  - legacy untracked v6 schema that already includes `green_decisions` but lacks `schema_migrations`
 - invalid or partial migration history fails closed with an explicit error instead of silently guessing
 
 Current migration chain:
@@ -101,6 +102,7 @@ Current migration chain:
 - `0003_runtime_cleanup_audit.sql`: adds cleanup audit columns on `artifact_refs` plus `runtime_cleanup_records`
 - `0004_bounded_contract_manifests.sql`: adds append-only bounded-contract manifest history
 - `0005_host_check_runs.sql`: adds append-only host-check execution history
+- `0006_green_decisions.sql`: adds append-only final deployable-green decision history
 
 What is not supported in this step:
 - downgrades
@@ -963,6 +965,44 @@ Host-check behavior in this step:
 - reviewer approval remains separate; in v1, run host checks after a reviewer-approved path and before treating the run as deployable green
 - this layer is host-side verification only; it is not cluster deployment orchestration
 
+## Formal deployable-green decision gate v1
+
+Evaluate the final deployable-green decision for one run:
+
+```bash
+cd /home/dkar/workspace/control
+./scripts/decide-deployable-green \
+  --sqlite-db /tmp/control-plane-v2.sqlite \
+  --run-id <run-id> \
+  --json
+```
+
+Show persisted decision history for one run:
+
+```bash
+cd /home/dkar/workspace/control
+./scripts/show-deployable-green-decision \
+  --sqlite-db /tmp/control-plane-v2.sqlite \
+  <run-id> \
+  --json
+```
+
+Deployable-green decision behavior in this step:
+- reviewer verdict source must be present
+- latest host-check verdict source must be present
+- decision statuses are:
+  - `deployable_green`
+  - `not_green`
+  - `blocked`
+- exact rule table is documented in [`docs/control-plane-v2/deployable-green.md`](/home/dkar/workspace/control/docs/control-plane-v2/deployable-green.md)
+- persistence is append-only in SQLite table `green_decisions`
+- manifest artifacts are also recorded in `artifact_refs` as `deployable_green_decision_manifest`
+- explicit v1 path is:
+  - reviewer-approved path completes
+  - host-side checks run
+  - final deployable-green decision runs
+- this layer is a host-side decision gate only; it does not perform rollout or deployment orchestration
+
 Run the focused local HTTP API smoke:
 
 ```bash
@@ -976,6 +1016,7 @@ The HTTP API smoke verifies:
 - task submit/list/show through HTTP
 - bounded contract generate/show through HTTP
 - host-side checks run/show through HTTP
+- deployable-green decide/show through HTTP
 - worker tick and run-until-idle through HTTP
 - pause/resume/force-stop through HTTP
 - cleanup dry-run through HTTP
@@ -993,6 +1034,20 @@ The host-checks smoke verifies:
 - advisory failure does not block green
 - timeout handling is explicit
 - persisted results are visible through CLI and HTTP
+
+Run the focused deployable-green smoke:
+
+```bash
+cd /home/dkar/workspace/control
+./scripts/smoke-control-plane-v2-deployable-green.sh
+```
+
+The deployable-green smoke verifies:
+- reviewer approved + host checks green => `deployable_green`
+- reviewer approved + host checks not_green => `not_green`
+- reviewer approved + missing host checks => `blocked`
+- reviewer blocked => `blocked`
+- persisted decision history is visible through CLI and HTTP
 
 ## Boundaries of this step
 - No daemonized worker/service manager.

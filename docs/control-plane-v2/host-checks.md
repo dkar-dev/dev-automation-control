@@ -189,7 +189,7 @@ curl -s http://127.0.0.1:8788/v1/checks/run \
 - The explicit v1 path is:
   1. reviewer-approved path completes
   2. host checks run on the host
-  3. operator or automation treats `green` as deployable green
+  3. run the formal deployable-green decision gate
 - If that requires a manual or provisional gate in the surrounding automation, keep it explicit. Do not hide it inside reviewer outcome persistence.
 
 ## Out Of Scope For v1

@@ -29,6 +29,7 @@ _CORE_MANAGED_TABLES = (
 )
 _CONTRACT_MANIFESTS_TABLE = "contract_manifests"
 _HOST_CHECK_RUNS_TABLE = "host_check_runs"
+_GREEN_DECISIONS_TABLE = "green_decisions"
 
 
 @dataclass(frozen=True)
@@ -225,6 +226,16 @@ def migrate_sqlite_v1(
             operation = "migrated_existing"
         elif before.detected_state == "legacy_untracked_v5":
             recorded_migrations.extend(_ensure_tracked_prefix(connection, resolved_db_path, migrations, up_to_version=5))
+            pending = [migration for migration in migrations if migration.version > 5]
+            if pending:
+                executed_now, recorded_now = _apply_pending_migrations(connection, resolved_db_path, pending)
+                executed_migrations.extend(executed_now)
+                recorded_migrations.extend(recorded_now)
+                operation = "migrated_existing"
+            else:
+                operation = "adopted_existing"
+        elif before.detected_state == "legacy_untracked_v6":
+            recorded_migrations.extend(_ensure_tracked_prefix(connection, resolved_db_path, migrations, up_to_version=6))
             operation = "adopted_existing"
         elif before.detected_state == "tracked":
             pending = [migration for migration in migrations if migration.version > before.current_version]
@@ -316,7 +327,14 @@ def _inspect_schema_version(
             user_tables,
             allow_tracked_table=True,
         )
-        if detected_layout_state not in {"legacy_untracked_v1", "legacy_untracked_v2", "legacy_untracked_v3", "legacy_untracked_v4", "legacy_untracked_v5"}:
+        if detected_layout_state not in {
+            "legacy_untracked_v1",
+            "legacy_untracked_v2",
+            "legacy_untracked_v3",
+            "legacy_untracked_v4",
+            "legacy_untracked_v5",
+            "legacy_untracked_v6",
+        }:
             raise SQLiteMigrationError(
                 code=SQLITE_MIGRATION_INVALID_STATE,
                 message="Tracked SQLite database has an invalid managed schema layout",
@@ -549,6 +567,7 @@ def _detect_untracked_layout(
     queue_has_paused = "paused" in queue_sql.lower()
     has_contract_manifests = _CONTRACT_MANIFESTS_TABLE in tables
     has_host_check_runs = _HOST_CHECK_RUNS_TABLE in tables
+    has_green_decisions = _GREEN_DECISIONS_TABLE in tables
     if runs_has_paused != queue_has_paused:
         raise SQLiteMigrationError(
             code=SQLITE_MIGRATION_INVALID_STATE,
@@ -575,8 +594,16 @@ def _detect_untracked_layout(
         if has_cleanup_columns and has_runtime_cleanup_records:
             if has_contract_manifests:
                 if has_host_check_runs:
+                    if has_green_decisions:
+                        return "legacy_untracked_v6", 6
                     return "legacy_untracked_v5", 5
                 return "legacy_untracked_v4", 4
+            if has_green_decisions:
+                raise SQLiteMigrationError(
+                    code=SQLITE_MIGRATION_INVALID_STATE,
+                    message="SQLite database has green_decisions without the required bounded-contract and host-check schema",
+                    database_path=database_path,
+                )
             if has_host_check_runs:
                 raise SQLiteMigrationError(
                     code=SQLITE_MIGRATION_INVALID_STATE,
@@ -594,6 +621,12 @@ def _detect_untracked_layout(
             raise SQLiteMigrationError(
                 code=SQLITE_MIGRATION_INVALID_STATE,
                 message="SQLite database has host_check_runs without the required cleanup-audit base schema",
+                database_path=database_path,
+            )
+        if has_green_decisions:
+            raise SQLiteMigrationError(
+                code=SQLITE_MIGRATION_INVALID_STATE,
+                message="SQLite database has green_decisions without the required cleanup-audit base schema",
                 database_path=database_path,
             )
         return "legacy_untracked_v2", 2

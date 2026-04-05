@@ -112,6 +112,12 @@ from .host_checks import (
     run_host_checks,
     show_host_check_results,
 )
+from .deployable_green import (
+    DEPLOYABLE_GREEN_STATUSES,
+    DeployableGreenError,
+    decide_deployable_green,
+    show_deployable_green_decision,
+)
 
 
 CONTROL_DIR = Path(__file__).resolve().parents[1]
@@ -1746,6 +1752,89 @@ def main_list_host_checks(argv: list[str] | None = None) -> int:
     return 0
 
 
+def main_decide_deployable_green(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(description="Evaluate the formal deployable-green v1 decision gate for one run.")
+    parser.add_argument("--sqlite-db", required=True, help="SQLite database path bootstrapped with init-sqlite-v1")
+    parser.add_argument("--request-json", help="Optional JSON file (or - for stdin) with the full decision payload")
+    parser.add_argument("--run-id", help="Run identifier to evaluate")
+    parser.add_argument("--flow-id", help="Optional flow identifier for scope validation")
+    parser.add_argument("--artifact-root", help="Optional artifact root override")
+    parser.add_argument("--json", action="store_true", help="Print machine-readable JSON output")
+    args = parser.parse_args(argv)
+
+    try:
+        payload = _load_json_argument(args.request_json) if args.request_json else {}
+        for key in ("run_id", "flow_id", "artifact_root"):
+            value = getattr(args, key)
+            if value is not None:
+                payload[key] = value
+        result = decide_deployable_green(args.sqlite_db, payload)
+    except DeployableGreenError as exc:
+        payload = {"ok": False, "stage": "deployable_green", "error": exc.to_dict()}
+        if args.json:
+            print(json.dumps(payload, ensure_ascii=False, indent=2), file=sys.stderr)
+        else:
+            print(f"Deployable-green decision failed: {exc.message}", file=sys.stderr)
+            if exc.details:
+                print(f"Details: {exc.details}", file=sys.stderr)
+        return 1
+
+    payload = {
+        "ok": True,
+        "sqlite_db": str(Path(args.sqlite_db).expanduser().resolve()),
+        "deployable_green_decision": result.to_dict(),
+    }
+    if args.json:
+        print(json.dumps(payload, ensure_ascii=False, indent=2))
+    else:
+        print(f"Decision: {result.decision_id}")
+        print(f"Status: {result.decision_status}")
+        print(f"Run: {result.run_id}")
+        print(f"Summary: {result.summary}")
+        print(f"Manifest: {result.manifest_path}")
+    return 0 if result.decision_status == "deployable_green" else 1
+
+
+def main_show_deployable_green_decision(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(description="Show persisted deployable-green decisions for one run.")
+    parser.add_argument("--sqlite-db", required=True, help="SQLite database path bootstrapped with init-sqlite-v1")
+    parser.add_argument("run_id", help="Run identifier")
+    parser.add_argument("--limit", type=int, default=20, help="Maximum number of decisions to return")
+    parser.add_argument("--json", action="store_true", help="Print machine-readable JSON output")
+    args = parser.parse_args(argv)
+
+    try:
+        result = show_deployable_green_decision(args.sqlite_db, args.run_id, limit=args.limit)
+    except DeployableGreenError as exc:
+        payload = {"ok": False, "stage": "deployable_green", "error": exc.to_dict()}
+        if args.json:
+            print(json.dumps(payload, ensure_ascii=False, indent=2), file=sys.stderr)
+        else:
+            print(f"Deployable-green decision lookup failed: {exc.message}", file=sys.stderr)
+            if exc.details:
+                print(f"Details: {exc.details}", file=sys.stderr)
+        return 1
+
+    payload = {
+        "ok": True,
+        "sqlite_db": str(Path(args.sqlite_db).expanduser().resolve()),
+        "deployable_green_decisions": result.to_dict(),
+    }
+    if args.json:
+        print(json.dumps(payload, ensure_ascii=False, indent=2))
+    else:
+        latest = result.latest_decision
+        print(f"Run: {result.run.run.id}")
+        print(f"Decisions: {len(result.history)}")
+        if latest is None:
+            print("Latest decision: none")
+        else:
+            print(f"Latest status: {latest.decision_status}")
+            print(f"Latest decision id: {latest.decision_id}")
+            print(f"Latest summary: {latest.summary}")
+    return 0
+
+
 def main_generate_bounded_contract(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Generate one bounded contract from approved project policy/templates.")
     parser.add_argument("--sqlite-db", required=True, help="SQLite database path bootstrapped with init-sqlite-v1")
@@ -2504,6 +2593,12 @@ def main() -> int:
     list_host_checks_parser = subparsers.add_parser("list-host-checks")
     list_host_checks_parser.add_argument("args", nargs=argparse.REMAINDER)
 
+    decide_deployable_green_parser = subparsers.add_parser("decide-deployable-green")
+    decide_deployable_green_parser.add_argument("args", nargs=argparse.REMAINDER)
+
+    show_deployable_green_parser = subparsers.add_parser("show-deployable-green-decision")
+    show_deployable_green_parser.add_argument("args", nargs=argparse.REMAINDER)
+
     generate_bounded_contract_parser = subparsers.add_parser("generate-bounded-contract")
     generate_bounded_contract_parser.add_argument("args", nargs=argparse.REMAINDER)
 
@@ -2595,6 +2690,10 @@ def main() -> int:
         return main_show_host_check_results(args.args)
     if args.command == "list-host-checks":
         return main_list_host_checks(args.args)
+    if args.command == "decide-deployable-green":
+        return main_decide_deployable_green(args.args)
+    if args.command == "show-deployable-green-decision":
+        return main_show_deployable_green_decision(args.args)
     if args.command == "generate-bounded-contract":
         return main_generate_bounded_contract(args.args)
     if args.command == "show-bounded-contract":
