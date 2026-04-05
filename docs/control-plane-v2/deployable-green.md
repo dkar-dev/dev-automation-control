@@ -112,6 +112,7 @@ curl -s http://127.0.0.1:8788/v1/green/decide \
   1. complete reviewer outcome persistence
   2. run host-side checks
   3. decide deployable green
+  4. optionally export a release handoff bundle
 
 The final decision layer does not hide reviewer logic inside host checks and does not hide host-check logic inside reviewer persistence.
 

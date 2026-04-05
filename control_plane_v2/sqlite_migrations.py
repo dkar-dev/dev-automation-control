@@ -30,6 +30,7 @@ _CORE_MANAGED_TABLES = (
 _CONTRACT_MANIFESTS_TABLE = "contract_manifests"
 _HOST_CHECK_RUNS_TABLE = "host_check_runs"
 _GREEN_DECISIONS_TABLE = "green_decisions"
+_RELEASE_HANDOFFS_TABLE = "release_handoffs"
 
 
 @dataclass(frozen=True)
@@ -236,6 +237,16 @@ def migrate_sqlite_v1(
                 operation = "adopted_existing"
         elif before.detected_state == "legacy_untracked_v6":
             recorded_migrations.extend(_ensure_tracked_prefix(connection, resolved_db_path, migrations, up_to_version=6))
+            pending = [migration for migration in migrations if migration.version > 6]
+            if pending:
+                executed_now, recorded_now = _apply_pending_migrations(connection, resolved_db_path, pending)
+                executed_migrations.extend(executed_now)
+                recorded_migrations.extend(recorded_now)
+                operation = "migrated_existing"
+            else:
+                operation = "adopted_existing"
+        elif before.detected_state == "legacy_untracked_v7":
+            recorded_migrations.extend(_ensure_tracked_prefix(connection, resolved_db_path, migrations, up_to_version=7))
             operation = "adopted_existing"
         elif before.detected_state == "tracked":
             pending = [migration for migration in migrations if migration.version > before.current_version]
@@ -334,6 +345,7 @@ def _inspect_schema_version(
             "legacy_untracked_v4",
             "legacy_untracked_v5",
             "legacy_untracked_v6",
+            "legacy_untracked_v7",
         }:
             raise SQLiteMigrationError(
                 code=SQLITE_MIGRATION_INVALID_STATE,
@@ -568,6 +580,7 @@ def _detect_untracked_layout(
     has_contract_manifests = _CONTRACT_MANIFESTS_TABLE in tables
     has_host_check_runs = _HOST_CHECK_RUNS_TABLE in tables
     has_green_decisions = _GREEN_DECISIONS_TABLE in tables
+    has_release_handoffs = _RELEASE_HANDOFFS_TABLE in tables
     if runs_has_paused != queue_has_paused:
         raise SQLiteMigrationError(
             code=SQLITE_MIGRATION_INVALID_STATE,
@@ -595,9 +608,17 @@ def _detect_untracked_layout(
             if has_contract_manifests:
                 if has_host_check_runs:
                     if has_green_decisions:
+                        if has_release_handoffs:
+                            return "legacy_untracked_v7", 7
                         return "legacy_untracked_v6", 6
                     return "legacy_untracked_v5", 5
                 return "legacy_untracked_v4", 4
+            if has_release_handoffs:
+                raise SQLiteMigrationError(
+                    code=SQLITE_MIGRATION_INVALID_STATE,
+                    message="SQLite database has release_handoffs without the required green_decisions schema",
+                    database_path=database_path,
+                )
             if has_green_decisions:
                 raise SQLiteMigrationError(
                     code=SQLITE_MIGRATION_INVALID_STATE,

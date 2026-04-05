@@ -20,6 +20,7 @@ This repo is the control plane for local orchestration between `n8n`, operator t
 - The v2 scaffold now also includes a bounded-contract generation engine v1, so approved policy/templates can be rendered into normalized machine-readable contracts and Codex-ready prompts without changing architecture or workflow semantics.
 - The v2 scaffold now also includes a bounded host-side checks matrix v1, so reviewer-approved runs can be verified on the host and gated to `green | not_green | blocked` without adding Kubernetes or cluster orchestration.
 - The v2 scaffold now also includes a formal deployable-green decision gate v1, so reviewer outcome plus latest host-side checks can produce one append-only final decision `deployable_green | not_green | blocked` without becoming a deployment controller.
+- The v2 scaffold now also includes an explicit release handoff bundle v1, so a deployable-green run can be exported as one append-only release-ready package for an operator or external deploy system without performing deployment.
 - Cutover from the legacy bridge transport to the v2 HTTP API is controlled and partial; the backend runner layer remains intentionally legacy.
 - The first executable v2 utilities now live in:
   - `scripts/validate-project-package`
@@ -70,6 +71,9 @@ This repo is the control plane for local orchestration between `n8n`, operator t
   - `scripts/show-host-check-results`
   - `scripts/decide-deployable-green`
   - `scripts/show-deployable-green-decision`
+  - `scripts/create-release-handoff`
+  - `scripts/show-release-handoff`
+  - `scripts/list-release-handoffs`
   - `scripts/smoke-control-plane-v2.sh`
   - `scripts/smoke-control-plane-v2-sqlite-migrations.sh`
   - `scripts/smoke-control-plane-v2-dispatch.sh`
@@ -81,6 +85,7 @@ This repo is the control plane for local orchestration between `n8n`, operator t
   - `scripts/smoke-control-plane-v2-contracts.sh`
   - `scripts/smoke-control-plane-v2-host-checks.sh`
   - `scripts/smoke-control-plane-v2-deployable-green.sh`
+  - `scripts/smoke-control-plane-v2-release-handoff.sh`
   - `scripts/smoke-control-plane-v2-n8n-binding.sh`
 - Operator/dev usage notes for those utilities are in:
   - [`docs/control-plane-v2/bootstrap-and-validation.md`](/home/dkar/workspace/control/docs/control-plane-v2/bootstrap-and-validation.md)
@@ -89,6 +94,7 @@ This repo is the control plane for local orchestration between `n8n`, operator t
   - [`docs/control-plane-v2/bounded-contract-generation.md`](/home/dkar/workspace/control/docs/control-plane-v2/bounded-contract-generation.md)
   - [`docs/control-plane-v2/host-checks.md`](/home/dkar/workspace/control/docs/control-plane-v2/host-checks.md)
   - [`docs/control-plane-v2/deployable-green.md`](/home/dkar/workspace/control/docs/control-plane-v2/deployable-green.md)
+  - [`docs/control-plane-v2/release-handoff.md`](/home/dkar/workspace/control/docs/control-plane-v2/release-handoff.md)
   - [`docs/control-plane-v2/orchestration-cutover.md`](/home/dkar/workspace/control/docs/control-plane-v2/orchestration-cutover.md)
   - [`docs/deprecations/legacy-bridge-orchestration.md`](/home/dkar/workspace/control/docs/deprecations/legacy-bridge-orchestration.md)
   - [`docs/n8n/README.md`](/home/dkar/workspace/control/docs/n8n/README.md)
@@ -115,6 +121,7 @@ This repo is the control plane for local orchestration between `n8n`, operator t
 - Progress execution with `POST /v1/worker/tick`, `POST /v1/worker/run-until-idle`, `./scripts/run-worker-tick`, or `./scripts/run-worker-until-idle`
 - Run the host-side deploy gate with `POST /v1/checks/run`, `GET /v1/checks/{run_id}`, `./scripts/run-host-checks`, or `./scripts/show-host-check-results`
 - Make the formal final promotion decision with `POST /v1/green/decide`, `GET /v1/green/{run_id}`, `./scripts/decide-deployable-green`, or `./scripts/show-deployable-green-decision`
+- Export the final release handoff package with `POST /v1/release-handoff/create`, `GET /v1/release-handoff/{run_id}`, `./scripts/create-release-handoff`, or `./scripts/show-release-handoff`
 - Use manual control through `GET /v1/runs/{run_id}/control-state` plus `POST /v1/runs/{run_id}/{pause|resume|force-stop|rerun-step}`
 - Run retention cleanup with `POST /v1/cleanup/run-once`, `./scripts/list-cleanup-candidates`, `./scripts/run-cleanup-once`, or `./scripts/show-cleanup-status`
 - Cutover mapping: [`docs/control-plane-v2/orchestration-cutover.md`](/home/dkar/workspace/control/docs/control-plane-v2/orchestration-cutover.md)
@@ -136,7 +143,8 @@ This repo is the control plane for local orchestration between `n8n`, operator t
 - After a v2 reviewer dispatch finishes, `scripts/ingest-reviewer-result` can extract the semantic verdict from stored reviewer artifacts and close the v2 outcome chain.
 - `scripts/run-host-checks` and `POST /v1/checks/run` intentionally stay outside reviewer semantics.
 - `scripts/decide-deployable-green` and `POST /v1/green/decide` intentionally stay outside reviewer persistence and host-check execution semantics.
-- In v1, the explicit path is reviewer approval -> host checks -> final deployable-green decision.
+- `scripts/create-release-handoff` and `POST /v1/release-handoff/create` intentionally stay outside rollout/deployment execution semantics.
+- In v1, the explicit path is reviewer approval -> host checks -> final deployable-green decision -> release handoff export.
 - `scripts/run-worker-tick` and `scripts/run-worker-until-idle` now chain claim -> dispatch -> ingestion on a single host process, but they do not add daemonization or multi-worker fencing.
 - `scripts/submit-bounded-task` creates a root run plus persisted submission/runtime-context manifests, so `scripts/run-worker-tick` can pick up the queued run later without a separate `context.json`.
 - `scripts/pause-run`, `scripts/resume-run`, `scripts/force-stop-run`, and `scripts/rerun-run-step` provide the bounded v1 manual recovery layer over the same run/queue/step primitives.

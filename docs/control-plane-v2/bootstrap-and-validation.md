@@ -2,7 +2,7 @@
 
 ## Scope
 - This step adds the first executable infrastructure layer for the v2 scaffold only.
-- It provides strict project package validation, SQLite schema bootstrap/init, SQLite migration management, project registry/import, bounded task intake/run submission, root run creation/inspection, step_run lifecycle utilities, reviewer outcome/follow-up persistence, provisional scheduler claim/release primitives, a bounded manual dispatch adapter for claimed runs, a bounded single-worker loop v1, a bounded manual control/recovery layer v1, a bounded runtime cleanup manager v1, a bounded host-side checks matrix v1, a formal deployable-green decision gate v1, and a thin localhost-only HTTP API v1 over those same primitives.
+- It provides strict project package validation, SQLite schema bootstrap/init, SQLite migration management, project registry/import, bounded task intake/run submission, root run creation/inspection, step_run lifecycle utilities, reviewer outcome/follow-up persistence, provisional scheduler claim/release primitives, a bounded manual dispatch adapter for claimed runs, a bounded single-worker loop v1, a bounded manual control/recovery layer v1, a bounded runtime cleanup manager v1, a bounded host-side checks matrix v1, a formal deployable-green decision gate v1, an explicit release handoff bundle export v1, and a thin localhost-only HTTP API v1 over those same primitives.
 - It still does not implement a daemon/service runtime, multi-worker protocol, or auto-continue policy engine.
 
 ## Project package validation
@@ -94,6 +94,7 @@ SQLite migration behavior in this step:
   - legacy untracked v4 schema that already includes `contract_manifests` but lacks `schema_migrations`
   - legacy untracked v5 schema that already includes `host_check_runs` but lacks `schema_migrations`
   - legacy untracked v6 schema that already includes `green_decisions` but lacks `schema_migrations`
+  - legacy untracked v7 schema that already includes `release_handoffs` but lacks `schema_migrations`
 - invalid or partial migration history fails closed with an explicit error instead of silently guessing
 
 Current migration chain:
@@ -103,6 +104,7 @@ Current migration chain:
 - `0004_bounded_contract_manifests.sql`: adds append-only bounded-contract manifest history
 - `0005_host_check_runs.sql`: adds append-only host-check execution history
 - `0006_green_decisions.sql`: adds append-only final deployable-green decision history
+- `0007_release_handoffs.sql`: adds append-only release handoff bundle history
 
 What is not supported in this step:
 - downgrades
@@ -1001,7 +1003,52 @@ Deployable-green decision behavior in this step:
   - reviewer-approved path completes
   - host-side checks run
   - final deployable-green decision runs
+- the next explicit export-only step is release handoff bundle creation
 - this layer is a host-side decision gate only; it does not perform rollout or deployment orchestration
+
+## Release handoff bundle v1
+
+Create one explicit release handoff bundle for a deployable-green run:
+
+```bash
+cd /home/dkar/workspace/control
+./scripts/create-release-handoff \
+  --sqlite-db /tmp/control-plane-v2.sqlite \
+  --run-id <run-id> \
+  --json
+```
+
+Show persisted handoff history for one run:
+
+```bash
+cd /home/dkar/workspace/control
+./scripts/show-release-handoff \
+  --sqlite-db /tmp/control-plane-v2.sqlite \
+  <run-id> \
+  --json
+```
+
+List persisted handoff bundles:
+
+```bash
+cd /home/dkar/workspace/control
+./scripts/list-release-handoffs \
+  --sqlite-db /tmp/control-plane-v2.sqlite \
+  --json
+```
+
+Release handoff behavior in this step:
+- bundle creation is allowed only when the latest deployable-green decision is `deployable_green`
+- persistence is append-only in SQLite table `release_handoffs`
+- bundle artifacts are also recorded in `artifact_refs` as:
+  - `release_handoff_manifest`
+  - `release_handoff_summary_markdown`
+  - `release_handoff_artifact_index`
+- commit source rule is strict in v1:
+  - export requires a persisted `commit_sha`
+  - if no persisted commit source can be resolved, bundle creation fails explicitly
+- the full contents and rule details are documented in [`docs/control-plane-v2/release-handoff.md`](/home/dkar/workspace/control/docs/control-plane-v2/release-handoff.md)
+- this layer is export-only; it does not perform rollout, deployment, or rollback orchestration
 
 Run the focused local HTTP API smoke:
 
@@ -1017,6 +1064,7 @@ The HTTP API smoke verifies:
 - bounded contract generate/show through HTTP
 - host-side checks run/show through HTTP
 - deployable-green decide/show through HTTP
+- release-handoff create/show through HTTP
 - worker tick and run-until-idle through HTTP
 - pause/resume/force-stop through HTTP
 - cleanup dry-run through HTTP
@@ -1048,6 +1096,20 @@ The deployable-green smoke verifies:
 - reviewer approved + missing host checks => `blocked`
 - reviewer blocked => `blocked`
 - persisted decision history is visible through CLI and HTTP
+
+Run the focused release-handoff smoke:
+
+```bash
+cd /home/dkar/workspace/control
+./scripts/smoke-control-plane-v2-release-handoff.sh
+```
+
+The release-handoff smoke verifies:
+- deployable-green + persisted commit => bundle created
+- deployable-green + missing commit => explicit export failure
+- `not_green` decision => export rejected
+- persisted bundle history is visible through CLI
+- markdown summary and JSON manifest stay consistent
 
 ## Boundaries of this step
 - No daemonized worker/service manager.

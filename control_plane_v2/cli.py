@@ -118,6 +118,12 @@ from .deployable_green import (
     decide_deployable_green,
     show_deployable_green_decision,
 )
+from .release_handoff import (
+    ReleaseHandoffError,
+    create_release_handoff,
+    list_release_handoffs,
+    show_release_handoff,
+)
 
 
 CONTROL_DIR = Path(__file__).resolve().parents[1]
@@ -1835,6 +1841,132 @@ def main_show_deployable_green_decision(argv: list[str] | None = None) -> int:
     return 0
 
 
+def main_create_release_handoff(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(description="Create an explicit release handoff bundle for one deployable-green run.")
+    parser.add_argument("--sqlite-db", required=True, help="SQLite database path bootstrapped with init-sqlite-v1")
+    parser.add_argument("--request-json", help="Optional JSON file (or - for stdin) with the full handoff payload")
+    parser.add_argument("--run-id", help="Run identifier to export")
+    parser.add_argument("--flow-id", help="Optional flow identifier for scope validation")
+    parser.add_argument("--artifact-root", help="Optional artifact root override")
+    parser.add_argument("--operator-note", action="append", dest="operator_notes", help="Append one operator note")
+    parser.add_argument("--json", action="store_true", help="Print machine-readable JSON output")
+    args = parser.parse_args(argv)
+
+    try:
+        payload = _load_json_argument(args.request_json) if args.request_json else {}
+        for key in ("run_id", "flow_id", "artifact_root"):
+            value = getattr(args, key)
+            if value is not None:
+                payload[key] = value
+        if args.operator_notes:
+            payload["operator_notes"] = list(args.operator_notes)
+        result = create_release_handoff(args.sqlite_db, payload)
+    except ReleaseHandoffError as exc:
+        payload = {"ok": False, "stage": "release_handoff", "error": exc.to_dict()}
+        if args.json:
+            print(json.dumps(payload, ensure_ascii=False, indent=2), file=sys.stderr)
+        else:
+            print(f"Release handoff creation failed: {exc.message}", file=sys.stderr)
+            if exc.details:
+                print(f"Details: {exc.details}", file=sys.stderr)
+        return 1
+
+    payload = {
+        "ok": True,
+        "sqlite_db": str(Path(args.sqlite_db).expanduser().resolve()),
+        "release_handoff": result.to_dict(),
+    }
+    if args.json:
+        print(json.dumps(payload, ensure_ascii=False, indent=2))
+    else:
+        print(f"Bundle: {result.bundle_id}")
+        print(f"Run: {result.run_id}")
+        print(f"Commit: {result.commit_sha}")
+        print(f"Manifest: {result.manifest_path}")
+    return 0
+
+
+def main_show_release_handoff(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(description="Show persisted release handoff bundles for one run.")
+    parser.add_argument("--sqlite-db", required=True, help="SQLite database path bootstrapped with init-sqlite-v1")
+    parser.add_argument("run_id", help="Run identifier")
+    parser.add_argument("--limit", type=int, default=20, help="Maximum number of bundles to return")
+    parser.add_argument("--json", action="store_true", help="Print machine-readable JSON output")
+    args = parser.parse_args(argv)
+
+    try:
+        result = show_release_handoff(args.sqlite_db, args.run_id, limit=args.limit)
+    except ReleaseHandoffError as exc:
+        payload = {"ok": False, "stage": "release_handoff", "error": exc.to_dict()}
+        if args.json:
+            print(json.dumps(payload, ensure_ascii=False, indent=2), file=sys.stderr)
+        else:
+            print(f"Release handoff lookup failed: {exc.message}", file=sys.stderr)
+            if exc.details:
+                print(f"Details: {exc.details}", file=sys.stderr)
+        return 1
+
+    payload = {
+        "ok": True,
+        "sqlite_db": str(Path(args.sqlite_db).expanduser().resolve()),
+        "release_handoffs": result.to_dict(),
+    }
+    if args.json:
+        print(json.dumps(payload, ensure_ascii=False, indent=2))
+    else:
+        latest = result.latest_bundle
+        print(f"Run: {result.run.run.id}")
+        print(f"Bundles: {len(result.history)}")
+        if latest is None:
+            print("Latest bundle: none")
+        else:
+            print(f"Latest bundle id: {latest.bundle_id}")
+            print(f"Latest commit: {latest.commit_sha}")
+            print(f"Latest manifest: {latest.manifest_path}")
+    return 0
+
+
+def main_list_release_handoffs(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(description="List persisted release handoff bundles.")
+    parser.add_argument("--sqlite-db", required=True, help="SQLite database path bootstrapped with init-sqlite-v1")
+    parser.add_argument("--project-key", help="Optional registered project key filter")
+    parser.add_argument("--limit", type=int, default=100, help="Maximum number of bundles to return")
+    parser.add_argument("--json", action="store_true", help="Print machine-readable JSON output")
+    args = parser.parse_args(argv)
+
+    try:
+        result = list_release_handoffs(
+            args.sqlite_db,
+            project_key=args.project_key,
+            limit=args.limit,
+        )
+    except ReleaseHandoffError as exc:
+        payload = {"ok": False, "stage": "release_handoff", "error": exc.to_dict()}
+        if args.json:
+            print(json.dumps(payload, ensure_ascii=False, indent=2), file=sys.stderr)
+        else:
+            print(f"Release handoff listing failed: {exc.message}", file=sys.stderr)
+            if exc.details:
+                print(f"Details: {exc.details}", file=sys.stderr)
+        return 1
+
+    payload = {
+        "ok": True,
+        "sqlite_db": str(Path(args.sqlite_db).expanduser().resolve()),
+        "release_handoffs": [item.to_dict() for item in result],
+    }
+    if args.json:
+        print(json.dumps(payload, ensure_ascii=False, indent=2))
+    else:
+        print(f"Release handoffs: {len(result)}")
+        for item in result:
+            print(
+                f"- {item.bundle_id} | run={item.run_id} | project={item.project_key} | "
+                f"commit={item.commit_sha} | status={item.decision_status}"
+            )
+    return 0
+
+
 def main_generate_bounded_contract(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Generate one bounded contract from approved project policy/templates.")
     parser.add_argument("--sqlite-db", required=True, help="SQLite database path bootstrapped with init-sqlite-v1")
@@ -2599,6 +2731,15 @@ def main() -> int:
     show_deployable_green_parser = subparsers.add_parser("show-deployable-green-decision")
     show_deployable_green_parser.add_argument("args", nargs=argparse.REMAINDER)
 
+    create_release_handoff_parser = subparsers.add_parser("create-release-handoff")
+    create_release_handoff_parser.add_argument("args", nargs=argparse.REMAINDER)
+
+    show_release_handoff_parser = subparsers.add_parser("show-release-handoff")
+    show_release_handoff_parser.add_argument("args", nargs=argparse.REMAINDER)
+
+    list_release_handoffs_parser = subparsers.add_parser("list-release-handoffs")
+    list_release_handoffs_parser.add_argument("args", nargs=argparse.REMAINDER)
+
     generate_bounded_contract_parser = subparsers.add_parser("generate-bounded-contract")
     generate_bounded_contract_parser.add_argument("args", nargs=argparse.REMAINDER)
 
@@ -2694,6 +2835,12 @@ def main() -> int:
         return main_decide_deployable_green(args.args)
     if args.command == "show-deployable-green-decision":
         return main_show_deployable_green_decision(args.args)
+    if args.command == "create-release-handoff":
+        return main_create_release_handoff(args.args)
+    if args.command == "show-release-handoff":
+        return main_show_release_handoff(args.args)
+    if args.command == "list-release-handoffs":
+        return main_list_release_handoffs(args.args)
     if args.command == "generate-bounded-contract":
         return main_generate_bounded_contract(args.args)
     if args.command == "show-bounded-contract":

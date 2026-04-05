@@ -4,7 +4,7 @@
 - This is the thin v1 transport boundary for the existing Control Plane v2 primitives.
 - This is the preferred local orchestration/control boundary for v1 operators, `n8n`, and local automations.
 - It is intended for localhost-only use from `n8n`, local automations, and other single-machine triggers.
-- It does not replace the existing CLI utilities; it routes requests into the same intake, bounded-contract generation, host-checks, deployable-green decision, worker, manual-control, and cleanup modules.
+- It does not replace the existing CLI utilities; it routes requests into the same intake, bounded-contract generation, host-checks, deployable-green decision, release-handoff export, worker, manual-control, and cleanup modules.
 - The legacy bridge on `127.0.0.1:8787` is deprecated as an orchestration transport.
 - Legacy executor/reviewer runner scripts remain backend implementations behind the dispatch adapter and worker loop.
 
@@ -145,6 +145,16 @@ Notes:
 - Query params:
   - `limit`
 
+`POST /v1/release-handoff/create`
+- Create one explicit release handoff bundle for a deployable-green run.
+- Uses the same export logic as `scripts/create-release-handoff`.
+- Uses server default `artifact_root` when the request omits it.
+
+`GET /v1/release-handoff/{run_id}`
+- Show persisted release handoff bundle history for one run.
+- Query params:
+  - `limit`
+
 `POST /v1/worker/tick`
 - Run one worker tick.
 - Request body may be `{}`.
@@ -277,6 +287,23 @@ Show deployable-green decision history:
 
 ```bash
 curl -s http://127.0.0.1:8788/v1/green/<run-id>
+```
+
+Create release handoff:
+
+```bash
+curl -s http://127.0.0.1:8788/v1/release-handoff/create \
+  -H 'Content-Type: application/json' \
+  -d '{
+    "run_id": "<run-id>",
+    "operator_notes": ["external deploy system consumes this bundle"]
+  }'
+```
+
+Show release handoff history:
+
+```bash
+curl -s http://127.0.0.1:8788/v1/release-handoff/<run-id>
 ```
 
 Resume in stabilize mode:

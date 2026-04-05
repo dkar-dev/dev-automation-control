@@ -384,6 +384,21 @@ assert green_decision["data"]["deployable_green_decision"]["decision_status"] ==
 green_history = request_json("GET", f"/v1/green/{urllib.parse.quote(run_id)}")
 assert green_history["data"]["deployable_green_decisions"]["latest_decision"]["decision_status"] == "deployable_green", green_history
 
+release_handoff = request_json(
+    "POST",
+    "/v1/release-handoff/create",
+    payload={
+        "run_id": run_id,
+        "operator_notes": ["api smoke external deploy handoff"],
+    },
+)
+assert release_handoff["data"]["release_handoff"]["decision_status"] == "deployable_green", release_handoff
+assert release_handoff["data"]["release_handoff"]["commit_sha"], release_handoff
+
+release_handoff_history = request_json("GET", f"/v1/release-handoff/{urllib.parse.quote(run_id)}")
+assert release_handoff_history["data"]["release_handoffs"]["latest_bundle"]["bundle_id"] == release_handoff["data"]["release_handoff"]["bundle_id"], release_handoff_history
+assert release_handoff_history["data"]["release_handoffs"]["latest_bundle"]["commit_sha"] == release_handoff["data"]["release_handoff"]["commit_sha"], release_handoff_history
+
 idle_loop = request_json("POST", "/v1/worker/run-until-idle", payload={"max_ticks": 5})
 assert idle_loop["data"]["worker_loop"]["ended_reason"] == "idle", idle_loop
 
