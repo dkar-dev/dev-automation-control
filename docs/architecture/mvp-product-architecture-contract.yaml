@@ -1,0 +1,882 @@
+contract:
+  id: dev-automation-platform-mvp-product-architecture
+  version: 0.1.0
+  status: working_snapshot
+  snapshot_date: 2026-09-08
+  language: en
+  purpose: >-
+    Preserve the currently accepted product and architecture decisions for the
+    Dev Automation Platform before further MVP design. This is a working source
+    of truth for the new product model, not a claim that the existing control
+    plane implementation already conforms to it.
+  relationship_to_existing_control_plane:
+    legacy_documents_remain_historical: true
+    current_v2_implementation_must_not_be_assumed_to_match_this_contract: true
+    note: >-
+      Existing Control Plane v2 contracts describe an earlier run/step_run and
+      executor/reviewer architecture. They are inputs for later refactoring,
+      not the authoritative product model for the design captured here.
+
+product_intent:
+  primary_goal: >-
+    The user fully plans a software project once, starts the platform, and then
+    can leave it running autonomously until it produces a working application
+    build ready for user testing.
+  autonomy_target:
+    - minimal user intervention after startup
+    - continuous automated planning, implementation, verification, correction,
+      state handoff, and continuation
+    - workers must not stop merely because an agent believes the project is
+      generally good enough
+  initial_workload:
+    - many small and medium SoftOS ecosystem applications
+    - SoftOS Documents is a representative target application
+  initial_worker_strategy:
+    primary_worker_family: MiniMax
+    transport/runtime_direction: OpenCode sessions
+    reason: exploit high available request budget while keeping the architecture model-agnostic
+  execution_environment:
+    default: isolated development environment
+    expected_hosts:
+      - local_machine
+      - VPS
+    host_OS_mutation_by_agents: forbidden_by_default
+    dependency_installation_inside_isolated_environment: allowed_subject_to_manifest
+    serious_stack_or_architecture_changes: user_escalation
+    minor_implementation_dependency_changes: agent_may_decide_within_core_and_policy
+
+core_principles:
+  - id: standardized_interfaces
+    rule: >-
+      Project, planning, work, result, verification, escalation, and user-control
+      artifacts use stable standardized schemas. Project-specific content fills
+      the schemas instead of redefining them.
+  - id: minimal_role_context
+    rule: >-
+      An agent never receives the whole project by default. A role-specific and
+      task-specific Context Package is assembled for every session.
+  - id: no_chat_history_dependency
+    rule: >-
+      A fresh worker session must be able to start from structured artifacts and
+      referenced repository state without requiring the previous chat transcript.
+  - id: evidence_over_claims
+    rule: >-
+      Agent statements that work is complete are insufficient. Completion is
+      granted only by a Gatekeeper using independently collected evidence.
+  - id: role_separation
+    rule: >-
+      Planning, implementation, verification, orchestration, and user-intent
+      analysis are separate responsibilities.
+  - id: immutable_completed_records
+    rule: >-
+      Completed execution contracts and session results are not edited
+      retrospectively. Follow-up work creates new linked artifacts.
+  - id: sealed_hierarchy
+    rule: >-
+      Task, Feature, and Epic become sealed after their corresponding accepted
+      gate, subject only to explicitly defined higher-level corrective paths.
+  - id: controlled_core_change
+    rule: >-
+      Product ideology and user-declared Core constraints cannot be silently
+      changed by the platform.
+
+project_core:
+  role: immutable_baseline_project_description
+  location: product_repository
+  format_direction: standardized_machine_readable_template
+  template_rule: >-
+    One shared template is used across projects. Sections may intentionally be
+    empty when they do not apply.
+  may_contain:
+    - product_idea
+    - product_ideology
+    - required_features
+    - UX_principles
+    - architecture_constraints
+    - target_platforms
+    - SoftOS_integrations
+    - implementation_rules
+    - quality_requirements
+    - non_goals
+    - open_questions
+    - closed_questions
+    - any_other_user_declared_invariant
+  mutation_policy:
+    agents_modify_core: false
+    user_manual_revision: allowed
+    architectural_decisions_outside_core: allowed_when_policy_permits
+  rationale: >-
+    Core must continue to answer what the project is supposed to be rather than
+    becoming a mixture of specification, journal, and runtime state.
+
+project_state:
+  role: mutable_current_state_of_development
+  logical_model: one_entity
+  physical_model: split_files
+  source_of_truth_location: platform_service_directory
+  not_source_of_truth_in_product_repo: true
+  suggested_shape:
+    - state/current.yaml
+    - state/epics.yaml
+    - state/decisions.yaml
+    - state/blockers.yaml
+    - state/history/
+  export:
+    supported: true
+    example: project-state.bundle.yaml
+    purpose:
+      - handoff_to_external_model
+      - user_review
+      - backup_or_diagnostics
+  repository_strategy:
+    product_repo_contains:
+      - source_code
+      - Project_Core
+      - project_owned_tests_and_assets
+    platform_state_repo_contains:
+      - runtime_state
+      - contracts
+      - results
+      - evidence
+      - sessions
+      - directives
+      - platform_history
+    synchronization_direction: local_and_VPS
+  suggested_root: ~/.softos-dev/projects/<project-key>/
+
+identity_and_traceability:
+  MVP_ids: simple_human_readable_ids
+  examples:
+    - epic-003
+    - feature-007
+    - task-014
+    - bug-005
+    - work-014
+    - result-014
+  explicit_relationships: required_where_relevant
+  graph_database_required: false
+
+bootstrap:
+  orchestrator_initial_inputs:
+    - Project_Core
+    - Orchestrator_System_Prompt
+    - Environment_Manifest
+  bootstrap_plan_entity: not_required
+  first_run_behavior:
+    - create_initial_Project_State
+    - derive_or_select_first_Epic
+    - start_Epic_Planner
+
+runtime_environment_manifest:
+  format: YAML
+  authoring_for_MVP: manual
+  structure:
+    base_manifest: global_platform_manifest
+    project_override: small_project_specific_override
+  purpose: >-
+    Describe what the platform can actually do in the current environment and
+    what it is permitted to do, rather than only what an agent knows how to do.
+  expected_content:
+    - available_models_and_roles
+    - tools_and_capability_flags
+    - filesystem_permissions
+    - shell_permissions
+    - network_permissions
+    - repository_and_worktree_paths
+    - browser_automation_availability
+    - dependency_installation_policy
+    - sudo_or_elevation_policy
+    - architecture_change_approval_policy
+    - external_service_policy
+    - runtime_limits
+    - request_budget
+    - concurrency_limits
+    - project_run_commands
+    - project_test_commands
+    - project_build_commands
+    - project_lint_commands
+  separate_Project_Runtime_Contract_for_MVP: false
+
+roles:
+  Analyst:
+    purpose: translate natural-language user intent into unambiguous structured control input
+    writes_Project_State: false
+    executes_project_actions: false
+    expected_model: cheap_or_free_model
+    OpenRouter_required: false
+    MVP_dialogues_per_project: one_active_dialogue
+    responsibilities:
+      - receive_user_messages
+      - ask_sequential_clarifying_questions_when_intent_is_ambiguous
+      - preserve_raw_user_input
+      - produce_User_Directive_or_formalized_answer
+      - infer_requested_priority_when_not_explicit
+      - provide_Decision_Context_to_user_when_the_user_lacks_context
+    should_receive:
+      - recent_dialogue
+      - active_project_summary
+      - current_priorities
+      - active_Epic_Feature_Task
+      - recent_User_Directives
+      - previous_priority_decisions
+    should_not_need:
+      - full_project_repository
+      - full_Project_Core_for_every_message
+      - full_Orchestrator_context
+
+  Orchestrator:
+    purpose: own global project progression and all accepted state mutation
+    codes_product: false
+    sole_authority_for_Project_State_changes: true
+    responsibilities:
+      - bootstrap_project_state
+      - select_current_Epic
+      - create_new_Epics_when_required
+      - reprioritize_Epics
+      - block_and_unblock_Epics
+      - split_Epics
+      - review_User_Directives
+      - choose_effective_execution_boundary
+      - apply_accepted_User_Directives
+      - create_Epic_Planner_sessions
+      - perform_replan_checkpoint_after_Epic_PASS
+      - ensure_work_does_not_stop_prematurely
+      - route_escalations
+    Core_usage:
+      always_read_entire_Core: false
+      read_on:
+        - bootstrap
+        - major_decisions
+        - invariant_checks
+        - escalations
+
+  Epic_Planner:
+    instance_scope: one_Epic
+    purpose: decompose an immutable Epic into executable Features and Tasks
+    may_change_Epic_boundaries: false
+    on_bad_Epic_definition: create_general_escalation_with_type_epic_revision
+    codes_product: false
+    produces:
+      - Feature_definitions
+      - Task_definitions
+      - Work_Contracts
+
+  Implementer:
+    purpose: execute a Work Contract
+    may_define_project_direction: false
+    may_create_next_Work_Contract: false
+    output: Session_Result
+    note: one_Task_may_span_multiple_OpenCode_sessions
+
+  Gatekeeper:
+    replaces_names:
+      - reviewer
+      - verifier
+      - reviewer_verifier
+    purpose: independently decide whether work passes an evidence gate
+    modifies_implementation_code: false
+    on_failure: return_structured_failure_and_Bug_information
+    levels:
+      Task_Gatekeeper:
+        checks:
+          - local_correctness
+          - code_quality
+          - relevant_architecture_constraints
+          - Task_acceptance_criteria
+          - required_tests_and_runtime_evidence
+        on_PASS:
+          - seal_Task
+          - create_task_level_checkpoint_commit
+      Feature_Gatekeeper:
+        session: fresh_independent_session
+        purpose: Feature_Integration_Gate
+        checks:
+          - Feature_Definition_of_Done
+          - integrated_behavior_of_all_Feature_Tasks
+          - relevant_UI_or_E2E_flows
+          - regressions_inside_Feature_scope
+        on_PASS:
+          - seal_Feature
+          - create_feature_level_commit_or_checkpoint
+      Epic_Gatekeeper:
+        session: fresh_independent_session
+        purpose: Epic_Integration_Gate
+        checks:
+          - Epic_Definition_of_Done
+          - business_or_technical_problem_is_actually_solved
+          - rerun_key_scenarios_from_constituent_Features
+          - cross_Feature_regressions
+        on_PASS:
+          - seal_Epic
+          - create_epic_level_commit_or_checkpoint
+          - trigger_Orchestrator_replan_checkpoint
+
+planning_hierarchy:
+  canonical: Epic -> Feature -> Task
+  Epic:
+    semantic_scale: concrete_business_or_technical_problem_function_or_goal
+    examples_of_expected_scale:
+      - Document_Editing_Core
+      - PDF_Pipeline
+      - Collaboration
+    required_definition_direction:
+      - goal
+      - in_scope
+      - out_of_scope
+      - dependencies
+      - blockers
+      - Definition_of_Done
+      - constraints
+    planner_mutability: immutable_to_Epic_Planner
+    orchestrator_operations:
+      create: allowed_if_Core_is_not_changed
+      reprioritize: allowed
+      block: allowed
+      unblock: allowed
+      split: allowed_without_user_escalation
+      merge: OPEN_ISSUE
+      cancel: user_escalation_required
+      delete: forbidden
+    type_system:
+      field_should_exist: true
+      MVP_initial_type: technical
+      future_candidate_types:
+        - business
+        - correction
+  Feature:
+    meaning: independently_verifiable_functional_or_technical_slice
+    target_normal_Task_count: 5_to_7
+    size_rule: >-
+      A Feature requiring roughly 15+ normal Tasks is presumed to be badly
+      bounded and should normally be split instead of inflating Task contracts.
+    type_field_for_MVP: not_required
+    after_Feature_Gate_PASS:
+      sealed: true
+      allowed_followup_inside_feature:
+        - fix_tasks_caused_by_higher_Epic_Gate_before_Epic_is_sealed
+      ordinary_new_Tasks: forbidden
+  Task:
+    meaning: bounded_unit_of_implementation_work
+    expected_to_be_verifiable_by_one_Task_Gate
+    fix_tasks_count_toward_5_to_7_target: false
+    type_direction:
+      normal: required
+      correction_or_fix: required_semantics_name_OPEN_ISSUE
+
+planning_horizon:
+  full_project_Task_tree_upfront: false
+  principle: rolling_horizon
+  rationale: >-
+    Full detailed project decomposition becomes stale after early architecture and
+    implementation discoveries.
+  Feature_normal_batch_target: 5_to_7_Tasks
+  exact_Epic_to_Feature_detailed_planning_horizon: OPEN_ISSUE
+
+work_contracts:
+  canonical_entity: Work_Contract
+  role: self_contained_execution_interface_for_a_new_session
+  common_schema_with_profiles: true
+  candidate_profiles:
+    - planning
+    - implementation
+    - gate
+    - architecture_change
+    - exception
+  mandatory_direction:
+    - id
+    - project_id
+    - parent_planning_entity
+    - goal
+    - scope
+    - non_scope
+    - constraints
+    - acceptance_criteria
+    - required_inputs_and_artifact_refs
+    - known_completed_work
+    - forbidden_changes
+    - required_evidence
+    - expected_output
+  previous_chat_history_required: false
+  immutable_after_completion: true
+  next_contract_created_by_worker: false
+  next_contract_authority:
+    normal_work: Epic_Planner_or_Orchestrator_as_applicable
+    fix_work: Epic_Planner
+
+context_packages:
+  canonical_entity: Context_Package
+  principle: strict_minimum_context_per_role_and_work_item
+  assembled_by: platform_system_component_using_standard_rules
+  planner_free_form_selection_as_only_mechanism: forbidden
+  expected_sources:
+    - Work_Contract
+    - selected_Project_State_fragments
+    - selected_Project_Core_constraints
+    - selected_repository_files
+    - selected_prior_results_or_evidence
+    - Environment_Manifest_subset
+  optimization_goal:
+    - reduce_token_usage
+    - reduce_irrelevant_information
+    - improve_role_focus
+    - make_sessions_reproducible
+
+session_results:
+  canonical_entity: Session_Result
+  required_for_worker_sessions: true
+  immutable_after_completion: true
+  expected_fields:
+    - work_contract_id
+    - session_id
+    - what_was_done
+    - changed_files
+    - commands_run
+    - tests_run
+    - evidence_refs
+    - artifacts_created
+    - decisions
+    - new_risks
+    - blockers
+    - unresolved_questions
+    - unfinished_work
+    - recommended_next_step
+  role: >-
+    Transfer factual state between sessions without relying on conversational
+    summaries.
+
+session_continuation_and_handoff:
+  one_Task_may_span_multiple_sessions: true
+  Work_Contract_remains_same_across_same_Task_continuation: true
+  OpenCode_native_compaction: allowed_and_expected
+  platform_checkpoint_independent_of_model: required
+  principle: >-
+    A handoff must never depend on an already-overflowed or otherwise dead model
+    session being able to describe itself.
+  platform_checkpoint_should_capture:
+    - work_contract_id
+    - session_id
+    - changed_files
+    - git_diff_or_ref
+    - commands_run
+    - tests_run
+    - artifacts
+    - current_task_state
+    - last_known_step
+  semantic_handoff_should_capture:
+    - decisions
+    - blockers
+    - important_context
+    - unfinished_work
+    - next_action
+  OpenCode_compaction_prompt_customization: desired
+  exact_MVP_rollover_policy: OPEN_ISSUE
+  withdrawn_Pre_MVP_constants:
+    max_successful_compactions_per_session_1: not_an_MVP_decision
+    rollover_grace_5_minutes: not_an_MVP_decision
+    rollover_max_6_tool_calls: not_an_MVP_decision
+  consistency_on_forced_rollover:
+    preferred_behavior: rollback_to_last_confirmed_consistent_checkpoint
+    exact_atomicity_and_snapshot_mechanism: OPEN_ISSUE
+
+verification_and_evidence:
+  completion_rule: Gatekeeper_PASS_required
+  backend_evidence_examples:
+    - unit_tests
+    - integration_tests
+    - actual_test_output
+    - runtime_logs
+  UI_evidence_examples:
+    - real_application_start
+    - automated_browser_clickthrough
+    - screenshots_or_recorded_states
+    - console_errors
+    - assertions_on_visible_behavior
+  integration_evidence_examples:
+    - end_to_end_scenario
+    - cross_component_runtime_test
+  principle: agent_says_done_is_never_sufficient
+
+bugs:
+  canonical_entity: Bug
+  first_class_entity_alongside:
+    - Epic
+    - Feature
+    - Task
+  creation_sources:
+    - Gatekeeper
+    - manual_user_report
+    - future_external_checks
+  may_start_unattached: true
+  compound_manual_Bug:
+    allowed: true
+    decomposition: >-
+      Orchestrator or Planner may decompose a compound Bug into child Bugs tied
+      to specific Features or Epics.
+    parent_closure: parent_remains_open_until_all_child_Bugs_are_resolved
+  lifecycle_for_MVP:
+    - open
+    - resolved
+  fix_flow:
+    - Bug
+    - one_or_more_Fix_Tasks
+    - Task_Gatekeeper_PASS_for_all_required_Fix_Tasks
+    - Bug_resolved
+  severity:
+    scale:
+      - low
+      - medium
+      - high
+      - critical
+    independent_from_priority: true
+    initial_authority: detecting_source_or_normalization_layer
+    orchestrator_may_rewrite: false
+  priority:
+    scale: 0_to_10
+    independent_from_severity: true
+  relation_to_sealed_hierarchy:
+    before_Feature_sealed: Fix_Tasks_live_in_current_Feature
+    after_Feature_sealed_but_before_Epic_sealed: >-
+      Epic Gate may cause Fix Tasks to be added to the affected sealed Feature as
+      an explicit higher-level corrective exception, followed by required re-verification.
+    after_Epic_sealed: >-
+      Future release/system defects should create new work rather than mutate the
+      sealed Epic. Current preferred direction is a new correction Epic.
+  OPEN_ISSUE:
+    - exact_required_fields_for_manually_created_Bug
+    - exact_normalization_and_decomposition_authority
+    - final_name_for_fix_Task_type
+
+failure_and_gate_retry:
+  Task_Gate_FAIL:
+    - create_or_link_Bug
+    - Planner_creates_new_Fix_Task
+    - Implementer_executes_Fix_Task
+    - Task_Gatekeeper_verifies_Fix_Task
+  original_failed_Task_is_not_rewritten: true
+  Feature_Gate_FAIL:
+    - Feature_remains_open
+    - create_or_link_Bugs
+    - Planner_creates_Fix_Tasks_inside_Feature
+    - rerun_Feature_Gate_after_fixes
+  Epic_Gate_FAIL:
+    - Epic_remains_open
+    - map_Bugs_to_affected_Features
+    - create_Fix_Tasks_inside_affected_Features
+    - rerun_necessary_lower_gates
+    - rerun_Epic_Gate
+  correction_reporting:
+    required_direction: true
+    purpose: show_what_was_fixed_in_which_Features_and_which_gate_found_it
+    exact_entity_or_report_format: OPEN_ISSUE
+
+orchestrator_replanning:
+  after_Epic_Gate_PASS: mandatory_replan_checkpoint
+  checkpoint_actions:
+    - update_Project_State
+    - reevaluate_dependencies
+    - reevaluate_blockers
+    - reevaluate_priorities
+    - choose_next_Epic
+  may_create_new_Epic: true
+  automatic_new_Epic_constraints:
+    allowed_when_caused_by:
+      - implementation_discovery
+      - dependency
+      - technical_debt_required_for_progress
+      - integration_need
+      - newly_discovered_mandatory_requirement
+    forbidden_when_it_changes_product_ideology_or_Core: true
+    on_Core_change_need: user_escalation
+  resume_after_Safe_Stop:
+    default_replan: false
+    rule: preserve_exact_continuation_point_unless_user_review_produces_new_directives
+
+exception_and_escalation:
+  canonical_mechanism: generalized_Exception_or_Escalation_Contract
+  separate_contract_per_exception_kind: false
+  typed_reasons: true
+  example_types:
+    - epic_revision
+    - serious_architecture_change
+    - core_conflict
+    - privileged_operation
+    - unresolved_directive_conflict
+  initial_MVP_user_channel: Telegram
+  user_question_style: sequential_clarifying_questions
+
+user_control:
+  primary_MVP_channel: Telegram_bot
+  input_style: natural_language
+  direct_commands_only: false
+  main_flow: User -> Telegram -> Analyst -> User_Directive -> Directive_Queue -> Orchestrator
+  system_notifications_may_bypass_Analyst: true
+  examples_of_direct_notifications:
+    - crash
+    - priority_10_accepted
+    - Safe_Stop_reached
+    - build_ready
+  Decision_Context:
+    purpose: help_user_understand_what_decision_is_needed
+    expected_content:
+      - what_happened
+      - current_work
+      - available_options
+      - consequence_of_each_option
+
+user_directives:
+  canonical_entity: User_Directive
+  immutable_input_record: true
+  reason_for_separate_entity: >-
+    It is the primary post-start user input into the autonomous system and must be
+    auditable independently from mutable Project State.
+  expected_fields:
+    - directive_id
+    - project_id
+    - created_at
+    - source
+    - raw_input
+    - normalized_intent
+    - parameters
+    - requested_priority
+    - status
+    - analyst_interpretation_metadata
+    - orchestrator_execution_metadata
+  queue_before_state_mutation: required
+  Project_State_changes_before_orchestrator_review: forbidden
+  statuses:
+    main_path:
+      - queued
+      - under_review
+      - accepted
+      - executing
+      - applied
+    side_states:
+      - rejected
+      - suspended
+      - superseded
+      - cancelled
+  semantics:
+    accepted: valid_and_scheduled_but_not_guaranteed_to_finish
+    suspended: temporarily_preempted_and_may_resume
+    superseded: meaning_replaced_by_newer_directive
+    cancelled: intentionally_not_executed
+  project_or_platform_paused_is_not_a_directive_status: true
+
+priority_model:
+  scale: 0_to_10
+  mapping:
+    0: parked
+    1_to_2: low
+    3_to_4: below_normal
+    5: normal_baseline
+    6_to_7: high
+    8: urgent
+    9: must_run_next_after_current_executing_work
+    10: interrupt_now
+  requested_priority_authority: Analyst_or_explicit_user_input
+  effective_priority_authority: Orchestrator
+  orchestrator_adjustment:
+    range_for_0_to_9: plus_or_minus_1
+    priority_10_mutable: false
+    user_notification_on_adjustment: required
+    audit_fields:
+      - requested_priority
+      - effective_priority
+      - adjustment_reason
+  ordering_for_equal_effective_priority_MVP: FIFO_by_created_at
+  preemption:
+    priorities_0_to_9_preempt_executing_work: false
+    priority_10_preempts: true
+    current_direction: Ctrl_C_like_interrupt_of_current_execution
+    exact_consistency_and_rollback_semantics: OPEN_ISSUE
+    system_generated_priority_10_for_MVP: not_required
+    current_priority_10_source: external_User_Directive
+  suspended_resume_after_priority_10:
+    mandatory_relevance_check: true
+    strategy:
+      - rules_first
+      - model_assisted_when_semantically_ambiguous
+    formal_checks_examples:
+      - target_still_exists
+      - target_not_already_closed
+      - directive_not_superseded
+      - no_newer_explicit_conflict
+      - dependencies_still_valid
+    unresolved_conflict: escalate_to_user_via_Telegram
+
+safe_stop:
+  preferred_name: Safe_Stop
+  previous_name: Lead_to_Green
+  concept: >-
+    Stop autonomous development only after reaching a selected verified boundary,
+    preserve an exact continuation point, and expose a working version for user review.
+  modes:
+    - pause_after_task
+    - pause_after_feature
+    - pause_after_epic
+  default_mode_direction: pause_after_feature
+  resume:
+    preserve_continuation_point: true
+    automatic_replan: false
+    replan_only_if_user_review_creates_new_directives: true
+  exact_MVP_build_or_deploy_behavior: OPEN_ISSUE
+
+release_and_system_verification:
+  MVP_required: false
+  future_direction:
+    configurable: true
+    separate_System_or_E2E_Gatekeeper: true
+    checks:
+      - UI_E2E
+      - backend_E2E
+      - integration
+      - regression_suite
+    post_sealed_Epic_defect_direction: create_new_correction_Epic
+  note: >-
+    Release/System Gate behavior is intentionally deferred; the MVP verification
+    hierarchy stops at Epic Gate unless later MVP planning explicitly changes this.
+
+source_control:
+  checkpoint_authority:
+    Task_PASS: Task_Gatekeeper
+    Feature_PASS: Feature_Gatekeeper
+    Epic_PASS: Epic_Gatekeeper
+  Implementer_checkpoint_commits_by_default: false
+  rationale: verified_boundaries_should_own_commits_that_mark_verified_state
+  exact_branch_worktree_parallelism_model: OPEN_ISSUE
+
+parallelism:
+  architecture_should_support_future_multiple_workers: true
+  MVP_worker_concurrency: OPEN_ISSUE
+  withdrawn_Pre_MVP_decision_concurrency_1: true
+  constraints_to_consider:
+    - MiniMax_rate_limits
+    - repository_conflicts
+    - worktree_isolation
+    - dependency_contention
+    - gate_scheduling
+
+storage_and_runtime_direction:
+  platform_service_directory_is_centralized: true
+  per_project_subdirectories: true
+  project_id_also_stored_in_entities: true
+  state_can_be_versioned_and_synced_between_local_and_VPS: true
+  current_existing_SQLite_model_reuse: OPEN_ISSUE
+  note: >-
+    The existing SQLite-backed Control Plane v2 implementation may provide useful
+    primitives, but its current run/step_run/queue model must be evaluated against
+    this newer Epic/Feature/Task/Bug/Directive architecture before reuse.
+
+security_and_privileged_actions:
+  autonomous_host_root_access: not_accepted
+  isolated_environment_dependency_installation: desired
+  sudo_or_elevation_on_host: user_approval_expected
+  future_user_approval_channel: Telegram
+  exact_MVP_sandbox_VM_container_strategy: OPEN_ISSUE
+  exact_privilege_broker_design: OPEN_ISSUE
+
+MVP_scope_direction:
+  must_have_concepts:
+    - standardized_Project_Core_input
+    - Project_State
+    - Environment_Manifest
+    - Analyst
+    - User_Directive_and_Directive_Queue
+    - Orchestrator
+    - Epic_Planner
+    - Epic_Feature_Task_hierarchy
+    - Bug_entity
+    - Work_Contract
+    - Context_Package
+    - Implementer
+    - Session_Result_and_checkpoint_handoff
+    - Task_Feature_Epic_Gatekeepers
+    - evidence_collection
+    - Safe_Stop_and_resume
+    - state_persistence_and_crash_recovery
+    - OpenCode_session_lifecycle
+    - basic_Telegram_control
+  intentionally_deferred_or_not_yet_required:
+    - Release_System_Gate
+    - sophisticated_deployment_pipeline
+    - model_fine_tuning_for_Analyst
+    - graph_database
+    - complex_cross_class_scheduler_fairness
+    - automatic_host_root_mutation
+
+withdrawn_Pre_MVP_scope:
+  status: no_longer_authoritative
+  reason: user_cancelled_the_need_for_a_separate_Pre_MVP_and_requested_full_MVP_design
+  items_not_to_treat_as_MVP_decisions:
+    - Telegram_removed_for_first_run
+    - CLI_only_control
+    - worker_concurrency_fixed_to_1
+    - local_build_only_as_final_product_behavior
+    - one_compaction_per_session_limit
+    - 5_minute_rollover_grace
+    - 6_tool_call_rollover_limit
+    - checkpoint_commit_only_once_per_Task_as_a_temporary_simplification
+
+open_questions:
+  product_and_planning:
+    - exact_Epic_to_Feature_rolling_planning_horizon
+    - whether_Epic_merge_requires_user_escalation_in_MVP
+    - final_Task_type_taxonomy_and_naming_for_Fix_Task
+    - exact_Correction_Report_representation
+    - exact_Bug_manual_input_schema_and_normalization_flow
+  gate_and_correction:
+    - exact_lower_gate_reverification_required_after_Epic_Gate_fix
+    - exact_evidence_requirements_by_Task_work_type
+    - whether_gate_level_commits_are_plain_commits_tags_or_structured_checkpoints
+  sessions_and_context:
+    - exact_OpenCode_session_rollover_policy
+    - compaction_hook_and_checkpoint_schema
+    - semantic_handoff_trigger_policy
+    - maximum_context_budget_per_role
+    - Context_Package_selection_rules_and_indexing_strategy
+  runtime_and_parallelism:
+    - MVP_worker_concurrency
+    - worktree_branch_and_merge_model
+    - scheduler_and_rate_limit_backpressure
+    - crash_recovery_and_lock_lease_model
+    - whether_and_how_to_reuse_existing_SQLite_control_plane_storage
+    - exact_VPS_runtime_process_model
+  dependencies_and_security:
+    - isolated_environment_technology
+    - dependency_installation_and_stack_change_policy_details
+    - sudo_or_privilege_broker_design
+  user_control:
+    - exact_Telegram_bot_protocol_and_notification_model
+    - Analyst_context_retention_and_summary_policy
+    - whether_Analyst_ever_needs_model_training_or_only_retrieved_history
+    - exact_priority_inference_prompt_or_rules
+    - priority_10_consistency_and_rollback_behavior
+    - exact_Safe_Stop_build_preview_behavior_for_MVP
+  schemas:
+    - final_machine_readable_Project_Core_template
+    - final_Project_State_file_split
+    - Work_Contract_schema
+    - Session_Result_schema
+    - Gate_Result_schema
+    - Bug_schema
+    - User_Directive_schema
+    - Environment_Manifest_schema
+    - Exception_Escalation_schema
+
+next_design_area:
+  status: continue_deliberate_MVP_product_design
+  immediate_question_before_snapshot: >-
+    Manual Bugs may be created independently and may initially describe multiple
+    problems across multiple Features. The next unfinished design question was
+    what minimum fields a manually created Bug should require versus what the
+    Orchestrator/Planner should normalize later.
+  suggested_next_large_areas_after_formal_model:
+    - OpenCode_session_and_worker_runtime
+    - Context_Package_assembly
+    - repository_worktree_and_parallel_execution
+    - persistence_recovery_and_locks
+    - dependency_and_privilege_execution
+    - model_routing_request_budget_and_backpressure
+    - VPS_runtime
+    - Telegram_and_control_pane
+    - final_MVP_scope_and_build_plan
